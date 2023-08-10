@@ -29,8 +29,9 @@ import yaml
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import create_model
 from timm import utils
+import random
 from src.producer import TensorProducer
-
+from functools import partial
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
 config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False)
@@ -339,6 +340,8 @@ def main():
     args, args_text = _parse_args()
     args.rank = 0
     args.prefetcher = not args.no_prefetcher
+    #random.seed(1337)
+    torch.manual_seed(1337)
 
     model = create_model(
         args.model,
@@ -370,40 +373,40 @@ def main():
         repeats=args.epoch_repeats,
     )
 
-    loader_train = create_loader(
-        dataset_train,
-        input_size=data_config['input_size'],
-        batch_size=args.batch_size,
-        is_training=True,
-        use_prefetcher=args.prefetcher,
-        no_aug=args.no_aug,
-        re_prob=args.reprob,
-        re_mode=args.remode,
-        re_count=args.recount,
-        re_split=args.resplit,
-        scale=args.scale,
-        ratio=args.ratio,
-        hflip=args.hflip,
-        vflip=args.vflip,
-        color_jitter=args.color_jitter,
-        auto_augment=args.aa,
-        num_aug_repeats=args.aug_repeats,
-        num_aug_splits=0,
-        interpolation=args.train_interpolation,
-        mean=data_config['mean'],
-        std=data_config['std'],
-        num_workers=args.workers,
-        distributed=False,
-        collate_fn=None,
-        pin_memory=args.pin_mem,
-        device=torch.device('cuda'),
-        use_multi_epochs_loader=args.use_multi_epochs_loader,
-        worker_seeding=args.worker_seeding,
-    )
+    # Need to do partial of data loader creation because internal random state is not deterministic otherwise
+    loader_fn = partial(create_loader, 
+                            input_size=data_config['input_size'],
+                            batch_size=args.batch_size,
+                            is_training=True,
+                            use_prefetcher=args.prefetcher,
+                            no_aug=args.no_aug,
+                            re_prob=args.reprob,
+                            re_mode=args.remode,
+                            re_count=args.recount,
+                            re_split=args.resplit,
+                            scale=args.scale,
+                            ratio=args.ratio,
+                            hflip=args.hflip,
+                            vflip=args.vflip,
+                            color_jitter=args.color_jitter,
+                            auto_augment=args.aa,
+                            num_aug_repeats=args.aug_repeats,
+                            num_aug_splits=0,
+                            interpolation=args.train_interpolation,
+                            mean=data_config['mean'],
+                            std=data_config['std'],
+                            num_workers=args.workers,
+                            distributed=False,
+                            collate_fn=None,
+                            pin_memory=args.pin_mem,
+                            device=torch.device('cuda'),
+                            use_multi_epochs_loader=args.use_multi_epochs_loader,
+                            worker_seeding=args.worker_seeding,
+                        )
 
-    producer = TensorProducer(loader_train, "5556", "5557", workers=2)
+    producer = TensorProducer(dataset_train, loader_fn, "5556", "5557", worker_count=0)
     for _ in producer:
-        print("sent")
+        print("")
 
 
 if __name__ == '__main__':

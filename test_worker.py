@@ -319,7 +319,6 @@ group.add_argument('--log-wandb', action='store_true', default=False,
 
 
 def _parse_args():
-    # Do we have a config file to parse?
     args_config, remaining = config_parser.parse_known_args()
     if args_config.config:
         with open(args_config.config, 'r') as f:
@@ -360,7 +359,12 @@ def main():
 
     consumer = TensorConsumer("5556", "5557")
     for batch in consumer:
-        print(batch)
+        inputs, labels = batch
+        if labels != None:
+            print(labels)
+        else:
+            print("Waiting ...")
+        time.sleep(0.5)
 
 
 if __name__ == '__main__':

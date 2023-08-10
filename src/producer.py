@@ -1,20 +1,25 @@
 import zmq
 import torch
-from zmq.utils.monitor import recv_monitor_message
 from zmq.eventloop import zmqstream
-from zmq.eventloop.ioloop import ZMQIOLoop
-loop = ZMQIOLoop()
-loop.install()
+from tornado import ioloop
+from zmq_utils.heartbeat import HeartBeater
+import threading
+import time
+import random
 
 class TensorProducer:
-    def __init__(self, data_loader, port, ack_port, workers=1):
+    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1):
         self.port = port
         self.ack_port = ack_port
-        self.data_loader = iter(data_loader)
-        self.data_loader_len = len(data_loader)
-        self.workers = workers
+        self.dataset = dataset
+        self.loader_fn = loader_fn
+        self._reset_data_loader()
+        self.data_loader_len = len(self.data_loader)
+        self.worker_count = worker_count
         self.idx = 0
         self.context = zmq.Context()
+
+        # Send batches via
         self.socket = self.context.socket(zmq.PUB)
         self.socket.bind("tcp://*:%s" % self.port)
 
@@ -24,63 +29,88 @@ class TensorProducer:
         self.ack_socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self.ack_count = 0
 
-        # Monitor on Ack sockets
-        #self.monitor_socket = self.ack_socket.get_monitor_socket(events=zmq.EVENT_HANDSHAKE_SUCCEEDED)
+        # Heartbeat monitor
+        heartbeat_thread = threading.Thread(target=self.start_heartbeat, args=())
+        heartbeat_thread.start()
+        time.sleep(1)
 
-        #self.wait_for_n_subscribers(workers)
-        events_socket = self.ack_socket.get_monitor_socket(events=zmq.EVENT_CONNECTED | zmq.EVENT_DISCONNECTED | zmq.EVENT_ACCEPTED)
-        self._mon_stream = zmqstream.ZMQStream(events_socket, io_loop=loop)
-        out = self._mon_stream.on_recv(self._on_mon)
-        print("out:", out)
+        # Dataset logic
+        self.dataset_is_reset = True
+        self.workers = {} # hold batch index for each worker
 
-    def set_workers(self, new_workers):
-        self.workers = new_workers
+    def start_heartbeat(self):
+        loop = ioloop.IOLoop()
+        context = zmq.Context()
+        pub = context.socket(zmq.PUB)
+        pub.bind('tcp://127.0.0.1:4444')
+        router = context.socket(zmq.ROUTER)
+        router.bind('tcp://127.0.0.1:4445')
+
+        outstream = zmqstream.ZMQStream(pub, loop)
+        instream = zmqstream.ZMQStream(router, loop)
+
+        self.hb = HeartBeater(loop, outstream, instream)
+        loop.start()
+
+    def set_worker_count(self, new_worker_count):
+        self.worker_count = new_worker_count
 
     def __iter__(self):
         return self
-    
-    def wait_for_n_subscribers(self, n_subscribers):
-        connections = 0
-        events_socket = self.ack_socket.get_monitor_socket(events=zmq.EVENT_CONNECTED | zmq.EVENT_DISCONNECTED | zmq.EVENT_ACCEPTED)
-        while connections < n_subscribers:
-            msg = recv_monitor_message(events_socket)  # this will block until a handshake was successful
-            print(msg)
-            connections += 1
-        print("waiting done")
 
-    def _on_mon(self, msg):
-        print("_on_mon")
-        ev = zmq.utils.monitor.parse_monitor_message(msg)
-        event = ev['event']
-        endpoint = ev['endpoint']
-        print(ev)
-        return ev
-    
     def __next__(self):
+        # end of data loader
         if self.idx >= self.data_loader_len:
             raise StopIteration
+        
+        # idle when no workers attached
+        elif len(self.hb.hearts) == 0:
+            print("No workers, waiting ...")
+            time.sleep(0.5)
+            # currently does not work properly.
+            # dataset seed is updated and only iterator can be reset deterministically
+            if not self.dataset_is_reset:
+                self._reset_data_loader()
+                self.dataset_is_reset = True
+                self.idx = 0
+
+        # new workers joined in
+        # reset data loader and update number of workers
+        elif len(self.hb.hearts) > self.worker_count:
+            self._reset_data_loader()
+            self.dataset_is_reset = True
+            self.set_worker_count(len(self.hb.hearts))
+            self.idx = 0
+
         else:
-            inputs, labels = next(self.data_loader)
-            inputs.to("cuda:0")
-            labels.to("cuda:0")
+            start = time.time()
+            if len(self.hb.hearts) != self.worker_count:
+                self.set_worker_count(len(self.hb.hearts))
+            inputs, labels = next(self.data_loader_iter)
+            inputs = inputs.to("cuda:0")
+            labels = labels.to("cuda:0")
             inputs_payload = self._create_payload(inputs)
             labels_payload = self._create_payload(labels)
-            payload = {"inputs": inputs_payload, "labels": labels_payload}
+            payload = {"batch_index": self.idx, "inputs": inputs_payload, "labels": labels_payload}
 
             self.socket.send_pyobj(payload)
 
             while True:
-                #msg = recv_monitor_message(self.monitor_socket)
-                #print(msg)
+                if self.ack_socket.poll(1000, zmq.POLLIN):
+                    consumer_idx, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
+                    #consumer_idx, batch_count = int(consumer_idx), int(batch_count)
+                    print(f"Consumer: {consumer_idx}, batch count: {batch_count}")
+                    self.ack_count += 1
+                else:
+                    print("Timeout on Ack, assuming worker is dead")
+                    self.worker_count -= 1
 
-                _ = self.ack_socket.recv_string() # wait for worker/consumer acknowledgement
-                self.ack_count += 1
-
-                if self.ack_count == self.workers:
+                if self.ack_count == self.worker_count:
                     self.ack_count = 0
                     break
 
             self.idx += 1
+            self.dataset_is_reset = False
 
     def _create_payload(self, tensor):
         storage = tensor.untyped_storage()
@@ -107,3 +137,9 @@ class TensorProducer:
 
     def __len__(self):
         return self.data_loader_len
+
+    def _reset_data_loader(self):
+        random.seed(1337)
+        torch.manual_seed(1337)
+        self.data_loader = self.loader_fn(self.dataset)
+        self.data_loader_iter = iter(self.data_loader)
