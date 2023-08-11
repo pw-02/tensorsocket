@@ -405,8 +405,11 @@ def main():
                         )
 
     producer = TensorProducer(dataset_train, loader_fn, "5556", "5557", worker_count=0)
-    for _ in producer:
-        print("")
+    epochs = 2
+    for i in range(epochs):
+        for _ in producer:
+            print("")
+    print("finished")
 
 
 if __name__ == '__main__':

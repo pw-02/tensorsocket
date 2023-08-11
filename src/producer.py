@@ -8,7 +8,7 @@ import time
 import random
 
 class TensorProducer:
-    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1):
+    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1, rubber_band_pct=0.1):
         self.port = port
         self.ack_port = ack_port
         self.dataset = dataset
@@ -37,6 +37,10 @@ class TensorProducer:
         # Dataset logic
         self.dataset_is_reset = True
         self.workers = {} # hold batch index for each worker
+        self.batch_progress = 0 # largest batch index we have made it to thus far
+        self.rubber_band_pct = rubber_band_pct # how far off we allow a new process to be
+                                               # from the furthest progressed process
+        self.epoch = 0
 
     def start_heartbeat(self):
         loop = ioloop.IOLoop()
@@ -61,29 +65,27 @@ class TensorProducer:
     def __next__(self):
         # end of data loader
         if self.idx >= self.data_loader_len:
+            self.idx = 0
+            self.batch_progress = 0
+            self.epoch += 1
             raise StopIteration
         
         # idle when no workers attached
         elif len(self.hb.hearts) == 0:
             print("No workers, waiting ...")
             time.sleep(0.5)
-            # currently does not work properly.
-            # dataset seed is updated and only iterator can be reset deterministically
             if not self.dataset_is_reset:
                 self._reset_data_loader()
-                self.dataset_is_reset = True
-                self.idx = 0
 
         # new workers joined in
-        # reset data loader and update number of workers
-        elif len(self.hb.hearts) > self.worker_count:
+        # only reset data loader and update number of workers
+        # if new worker is within rubber-banding range
+        elif len(self.hb.hearts) > self.worker_count and self.idx < (self.rubber_band_pct*self.data_loader_len):
+            #if self.idx < (self.rubber_band_pct*self.data_loader_len):
             self._reset_data_loader()
-            self.dataset_is_reset = True
             self.set_worker_count(len(self.hb.hearts))
-            self.idx = 0
 
         else:
-            start = time.time()
             if len(self.hb.hearts) != self.worker_count:
                 self.set_worker_count(len(self.hb.hearts))
             inputs, labels = next(self.data_loader_iter)
@@ -91,16 +93,19 @@ class TensorProducer:
             labels = labels.to("cuda:0")
             inputs_payload = self._create_payload(inputs)
             labels_payload = self._create_payload(labels)
-            payload = {"batch_index": self.idx, "inputs": inputs_payload, "labels": labels_payload}
+            payload = {"current_epoch": self.epoch, "current_batch_index": self.idx, "max_batch_index": self.batch_progress, 
+                       "total_batches": self.data_loader_len, "inputs": inputs_payload, "labels": labels_payload}
+            print(f"current_batch_index {self.idx}, max_batch_idx {self.batch_progress}")
 
             self.socket.send_pyobj(payload)
 
             while True:
                 if self.ack_socket.poll(1000, zmq.POLLIN):
-                    consumer_idx, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
-                    #consumer_idx, batch_count = int(consumer_idx), int(batch_count)
-                    print(f"Consumer: {consumer_idx}, batch count: {batch_count}")
+                    consumer_idx, worker_epoch, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
+                    print(f"Consumer: {consumer_idx}, batch count: {batch_count}, total batches: {self.data_loader_len}")
                     self.ack_count += 1
+                    if (int(batch_count)-1 > self.batch_progress) and (int(worker_epoch) == self.epoch):
+                        self.batch_progress = int(batch_count)
                 else:
                     print("Timeout on Ack, assuming worker is dead")
                     self.worker_count -= 1
@@ -143,3 +148,5 @@ class TensorProducer:
         torch.manual_seed(1337)
         self.data_loader = self.loader_fn(self.dataset)
         self.data_loader_iter = iter(self.data_loader)
+        self.dataset_is_reset = True
+        self.idx = 0

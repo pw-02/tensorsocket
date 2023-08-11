@@ -361,10 +361,10 @@ def main():
     for batch in consumer:
         inputs, labels = batch
         if labels != None:
-            print(labels)
+            print(labels[:5])
         else:
             print("Waiting ...")
-        time.sleep(0.5)
+        time.sleep(0.2)
 
 
 if __name__ == '__main__':
