@@ -8,7 +8,7 @@ import time
 import random
 
 class TensorProducer:
-    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1, rubber_band_pct=0.1):
+    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1, rubber_band_pct=0.2):
         self.port = port
         self.ack_port = ack_port
         self.dataset = dataset
@@ -38,9 +38,14 @@ class TensorProducer:
         self.dataset_is_reset = True
         self.workers = {} # hold batch index for each worker
         self.batch_progress = 0 # largest batch index we have made it to thus far
-        self.rubber_band_pct = rubber_band_pct # how far off we allow a new process to be
+        self.rb_pct = rubber_band_pct # how far off we allow a new process to be
                                                # from the furthest progressed process
         self.epoch = 0
+
+        # Rubberbanding
+        self.rb_buffer = list()
+        self.rb_max_len = (self.rb_pct*self.data_loader_len)
+        self.empty_rb_buffer = False
 
     def start_heartbeat(self):
         loop = ioloop.IOLoop()
@@ -68,54 +73,65 @@ class TensorProducer:
             self.idx = 0
             self.batch_progress = 0
             self.epoch += 1
+            self.rb_buffer = list()
             raise StopIteration
         
         # idle when no workers attached
         elif len(self.hb.hearts) == 0:
             print("No workers, waiting ...")
             time.sleep(0.5)
-            if not self.dataset_is_reset:
-                self._reset_data_loader()
-
-        # new workers joined in
-        # only reset data loader and update number of workers
-        # if new worker is within rubber-banding range
-        elif len(self.hb.hearts) > self.worker_count and self.idx < (self.rubber_band_pct*self.data_loader_len):
-            #if self.idx < (self.rubber_band_pct*self.data_loader_len):
-            self._reset_data_loader()
-            self.set_worker_count(len(self.hb.hearts))
 
         else:
+            current_batch_idx = self.idx
+            # if we are relatively early in the epoch, allow for new proc to catch up
+            if (self.worker_count > 0) and (len(self.hb.hearts) > self.worker_count) and (current_batch_idx < self.rb_max_len):
+                print("Empty RB buffer")
+                self.empty_rb_buffer = True
+
             if len(self.hb.hearts) != self.worker_count:
                 self.set_worker_count(len(self.hb.hearts))
+
             inputs, labels = next(self.data_loader_iter)
-            inputs = inputs.to("cuda:0")
-            labels = labels.to("cuda:0")
-            inputs_payload = self._create_payload(inputs)
-            labels_payload = self._create_payload(labels)
-            payload = {"current_epoch": self.epoch, "current_batch_index": self.idx, "max_batch_index": self.batch_progress, 
-                       "total_batches": self.data_loader_len, "inputs": inputs_payload, "labels": labels_payload}
-            print(f"current_batch_index {self.idx}, max_batch_idx {self.batch_progress}")
+            # add CPU tensors to rubber band buffer
+            if not self.empty_rb_buffer:
+                self.rb_buffer.append((current_batch_idx, inputs, labels))
+
+            # if buffer full, pop from end
+            if len(self.rb_buffer) > self.rb_max_len:
+                _ = self.rb_buffer.pop(-1)
+
+            if self.empty_rb_buffer:
+                current_batch_idx, inputs, labels = self.rb_buffer.pop(0)
+
+            inputs_gpu = inputs.to("cuda:0")
+            labels_gpu = labels.to("cuda:0")
+            inputs_payload = self._create_payload(inputs_gpu)
+            labels_payload = self._create_payload(labels_gpu)
+            payload = {"current_epoch": self.epoch, "current_batch_index": current_batch_idx, 
+                       "inputs": inputs_payload, "labels": labels_payload}
+            print(f"current_batch_index {current_batch_idx}, max_batch_idx {self.batch_progress}, buffer size: {len(self.rb_buffer)}")
 
             self.socket.send_pyobj(payload)
 
             while True:
                 if self.ack_socket.poll(1000, zmq.POLLIN):
-                    consumer_idx, worker_epoch, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
+                    consumer_idx, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
                     print(f"Consumer: {consumer_idx}, batch count: {batch_count}, total batches: {self.data_loader_len}")
                     self.ack_count += 1
-                    if (int(batch_count)-1 > self.batch_progress) and (int(worker_epoch) == self.epoch):
-                        self.batch_progress = int(batch_count)
                 else:
                     print("Timeout on Ack, assuming worker is dead")
                     self.worker_count -= 1
 
+                # received all Acks, can go to next batch
                 if self.ack_count == self.worker_count:
                     self.ack_count = 0
                     break
 
-            self.idx += 1
-            self.dataset_is_reset = False
+            if not self.empty_rb_buffer:
+                self.idx += 1
+
+            if len(self.rb_buffer) == 0:
+                self.empty_rb_buffer = False
 
     def _create_payload(self, tensor):
         storage = tensor.untyped_storage()
