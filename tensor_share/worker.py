@@ -45,7 +45,7 @@ class TensorConsumer:
             self.epoch = current_epoch
             self.batch_count = 0
 
-        print(f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}")
+        #print(f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}")
         if batch_idx == self.batch_count:
             inputs = rebuild_cuda_tensor(torch.Tensor, **inputs)
             labels = rebuild_cuda_tensor(torch.Tensor, **labels)

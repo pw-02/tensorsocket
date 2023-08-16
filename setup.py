@@ -8,5 +8,6 @@ setup(
         "tornado",
     ],
     dependency_links=[
-    ]
+    ],
+    py_modules=[],
 )

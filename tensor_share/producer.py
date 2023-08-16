@@ -8,13 +8,12 @@ import time
 import random
 
 class TensorProducer:
-    def __init__(self, dataset, loader_fn, port, ack_port, worker_count=1, rubber_band_pct=0.2):
+    def __init__(self, data_loader, port, ack_port, worker_count=1, rubber_band_pct=0.2):
         self.port = port
         self.ack_port = ack_port
-        self.dataset = dataset
-        self.loader_fn = loader_fn
-        self._reset_data_loader()
+        self.data_loader = data_loader
         self.data_loader_len = len(self.data_loader)
+        self.data_loader_iter = iter(self.data_loader)
         self.worker_count = worker_count
         self.idx = 0
         self.context = zmq.Context()
@@ -44,7 +43,8 @@ class TensorProducer:
 
         # Rubberbanding
         self.rb_buffer = list()
-        self.rb_max_len = (self.rb_pct*self.data_loader_len)
+        self.rb_max_len = 0
+        #self.rb_max_len = (self.rb_pct*self.data_loader_len)
         self.empty_rb_buffer = False
 
     def start_heartbeat(self):
@@ -102,21 +102,21 @@ class TensorProducer:
 
             if self.empty_rb_buffer:
                 current_batch_idx, inputs, labels = self.rb_buffer.pop(0)
+            inputs_gpu = inputs.to(torch.device('cuda'))
+            labels_gpu = labels.to(torch.device('cuda'))
 
-            inputs_gpu = inputs.to("cuda:0")
-            labels_gpu = labels.to("cuda:0")
             inputs_payload = self._create_payload(inputs_gpu)
             labels_payload = self._create_payload(labels_gpu)
             payload = {"current_epoch": self.epoch, "current_batch_index": current_batch_idx, 
                        "inputs": inputs_payload, "labels": labels_payload}
-            print(f"current_batch_index {current_batch_idx}, max_batch_idx {self.batch_progress}, buffer size: {len(self.rb_buffer)}")
+            #print(f"current_batch_index {current_batch_idx}, max_batch_idx {self.batch_progress}, buffer size: {len(self.rb_buffer)}")
 
             self.socket.send_pyobj(payload)
 
             while True:
                 if self.ack_socket.poll(1000, zmq.POLLIN):
                     consumer_idx, batch_count = self.ack_socket.recv_multipart() # wait for worker/consumer acknowledgement
-                    print(f"Consumer: {consumer_idx}, batch count: {batch_count}, total batches: {self.data_loader_len}")
+                    #print(f"Consumer: {consumer_idx}, batch count: {batch_count}, total batches: {self.data_loader_len}")
                     self.ack_count += 1
                 else:
                     print("Timeout on Ack, assuming worker is dead")
@@ -158,11 +158,3 @@ class TensorProducer:
 
     def __len__(self):
         return self.data_loader_len
-
-    def _reset_data_loader(self):
-        random.seed(1337)
-        torch.manual_seed(1337)
-        self.data_loader = self.loader_fn(self.dataset)
-        self.data_loader_iter = iter(self.data_loader)
-        self.dataset_is_reset = True
-        self.idx = 0

@@ -29,7 +29,7 @@ import yaml
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import create_model
 from timm import utils
-from src.worker import TensorConsumer
+from tensor_share.worker import TensorConsumer
 
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
