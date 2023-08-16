@@ -1,2 +1,2 @@
-# tensor-share
+# TensorShare
 Share PyTorch tensors over ZMQ sockets

@@ -15,21 +15,13 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
 import argparse
-import logging
-import os
 import time
-from collections import OrderedDict
-from contextlib import suppress
-from datetime import datetime
-from functools import partial
 
-import torch
-import torch.nn as nn
 import yaml
-from timm.data import create_dataset, create_loader, resolve_data_config
+from timm.data import resolve_data_config
 from timm.models import create_model
 from timm import utils
-from tensor_share.worker import TensorConsumer
+from tensorshare.consumer import TensorConsumer
 
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
