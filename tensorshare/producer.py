@@ -11,6 +11,7 @@ from .heartbeat import HeartBeater
 from .payload import TensorPayload
 
 logger = logging.getLogger("tensorshare")
+logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://*"
 
 
@@ -39,7 +40,7 @@ class TensorProducer:
 
         self.data_loader = data_loader
         self.data_loader_len = len(self.data_loader)
-        self.data_loader_iter = iter(self.data_loader)
+        #self.data_loader_iter = iter(self.data_loader)
 
         self.index = 0
         self.consumer_count = 0
@@ -91,6 +92,7 @@ class TensorProducer:
         self.consumer_count = new_consumer_count
 
     def __iter__(self):
+        self.data_loader_iter = iter(self.data_loader)
         return self
 
     def __next__(self):

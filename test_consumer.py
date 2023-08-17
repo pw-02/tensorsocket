@@ -18,9 +18,10 @@ import argparse
 import time
 
 import yaml
+from timm import utils
 from timm.data import resolve_data_config
 from timm.models import create_model
-from timm import utils
+
 from tensorshare.consumer import TensorConsumer
 
 # The first arg parser parses out only the --config argument, this argument is used to
@@ -356,7 +357,7 @@ def main():
             print(labels[:5])
         else:
             print("Waiting ...")
-        time.sleep(0.2)
+        time.sleep(0.05)
 
 
 if __name__ == '__main__':

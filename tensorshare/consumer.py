@@ -12,6 +12,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("tensorshare")
+logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://localhost"
 
 
