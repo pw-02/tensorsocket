@@ -29,7 +29,7 @@ from tensorshare.producer import TensorProducer
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
-    level=logging.DEBUG,
+    level=logging.INFO,
     stream=sys.stdout,
 )
 
@@ -851,7 +851,8 @@ group.add_argument(
     default=False,
     help="log training and validation metrics to wandb",
 )
-group.add_argument("--gpu-prefetch", action="store_true", default=False)
+#group.add_argument("--gpu-prefetch", action="store_true", default=False)
+group.add_argument("--gpu-prefetch", default=0, type=int)
 
 
 def _parse_args():
@@ -871,7 +872,7 @@ def _parse_args():
     return args, args_text
 
 
-def main():
+if __name__ == "__main__":
     args, args_text = _parse_args()
     args.rank = 0
     args.prefetcher = not args.no_prefetcher
@@ -942,14 +943,11 @@ def main():
         worker_seeding=args.worker_seeding,
     )
 
-    producer = TensorProducer(data_loader, "5556", "5557")
+    producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02)
+
     epochs = 2
-    for i in range(epochs):
+    for _ in range(epochs):
         for _ in producer:
-            # print("")
             pass
+    producer.join()
     print("finished")
-
-
-if __name__ == "__main__":
-    main()

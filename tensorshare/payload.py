@@ -17,7 +17,8 @@ class TensorPayload:
             self._tensor = rebuild_cuda_tensor(Tensor, **self.payload)
 
     def _from_tensor(self, tensor: Tensor) -> tuple:
-        storage = tensor.untyped_storage()
+        #storage = tensor.untyped_storage()
+        storage = tensor._typed_storage()
         (
             storage_device,
             storage_handle,
