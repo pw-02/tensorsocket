@@ -64,6 +64,9 @@ class TensorProducer:
         while self.hb is None:
             time.sleep(0.2)
 
+        self.heartbeat_monitor_thread = threading.Thread(target=self._heartbeat_monitor, args=(), daemon=True)
+        self.heartbeat_monitor_thread.start()
+
         # Dataset logic
         self.dataset_is_reset = True
         self.epoch = 0
@@ -87,6 +90,15 @@ class TensorProducer:
 
         self.hb = HeartBeater(self.loop, outstream, instream)
         self.loop.start()
+
+    def _heartbeat_monitor(self):
+        while True:
+            if len(self.hb.hearts) != self.consumer_count:
+                print(f"{self.name}: Setting hearts to {len(self.hb.hearts)} from {self.consumer_count}")
+                if len(self.hb.hearts) > self.consumer_count:
+                    self._set_consumer_len()
+                self._set_consumer_count(len(self.hb.hearts))
+            time.sleep(1)
 
     def join(self):
         self.loop.stop()
@@ -124,12 +136,6 @@ class TensorProducer:
             logger.info("Rubberbanding")
             self.rb_running = True
             self.buffer_idx = 0
-
-        if len(self.hb.hearts) != self.consumer_count:
-            logger.info(f"Setting hearts to {len(self.hb.hearts)} from {self.consumer_count}")
-            if len(self.hb.hearts) > self.consumer_count:
-                self._set_consumer_len()
-            self._set_consumer_count(len(self.hb.hearts))
 
         # add CPU tensors to rubberband buffer
         if not self.rb_running:
