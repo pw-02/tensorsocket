@@ -94,7 +94,6 @@ class TensorProducer:
     def _heartbeat_monitor(self):
         while True:
             if len(self.hb.hearts) != self.consumer_count:
-                print(f"{self.name}: Setting hearts to {len(self.hb.hearts)} from {self.consumer_count}")
                 if len(self.hb.hearts) > self.consumer_count:
                     self._set_consumer_len()
                 self._set_consumer_count(len(self.hb.hearts))
