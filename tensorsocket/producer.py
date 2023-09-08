@@ -102,6 +102,7 @@ class TensorProducer:
     def join(self):
         self.loop.stop()
         self.heartbeat_thread.join()
+        self.heartbeat_monitor_thread.join()
 
     def _set_consumer_count(self, new_consumer_count):
         self.consumer_count = new_consumer_count
