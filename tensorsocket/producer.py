@@ -64,6 +64,7 @@ class TensorProducer:
         while self.hb is None:
             time.sleep(0.2)
 
+        self._heartbeat_monitor_alive = True
         self.heartbeat_monitor_thread = threading.Thread(target=self._heartbeat_monitor, args=(), daemon=True)
         self.heartbeat_monitor_thread.start()
 
@@ -97,11 +98,14 @@ class TensorProducer:
                 if len(self.hb.hearts) > self.consumer_count:
                     self._set_consumer_len()
                 self._set_consumer_count(len(self.hb.hearts))
+            if not self._heartbeat_monitor_alive:
+                break
             time.sleep(1)
 
     def join(self):
         self.loop.stop()
         self.heartbeat_thread.join()
+        self._heartbeat_monitor_alive = False
         self.heartbeat_monitor_thread.join()
 
     def _set_consumer_count(self, new_consumer_count):
