@@ -10,8 +10,8 @@ from zmq.eventloop import zmqstream
 from .heartbeat import HeartBeater
 from .payload import TensorPayload
 
-logger = logging.getLogger("tensorshare")
-logger.setLevel(logging.WARNING)
+logger = logging.getLogger("tensorsocket")
+logger.setLevel(logging.INFO)
 LOCALHOST = "tcp://*"
 
 
@@ -23,9 +23,11 @@ class TensorProducer:
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
         rubber_band_pct: int = 0.02,
+        clip = None,
+        online = False,
     ):
-        """Data loader that sends inputs and labels over tcp
-        to training processes (consumers).
+        """
+        Data loader that sends inputs and labels over tcp to training processes (consumers).
 
         Args:
             data_loader (object): Data loader to wrap around. Should be iterable.
@@ -33,6 +35,8 @@ class TensorProducer:
             ack_port (int, optional): Acknowledgement port. Defaults to 5556.
             heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
             rubber_band_pct (int, optional): Maximum allowed distance between consumers, in percent of training dataset size. Defaults to 0.02.
+            clip (optional): CLIP model that can embed images and text. Useful in DALLE2 training.
+            online (bool, optional): Whether to generate CLIP image embeddings online.
         """
         self.port = port
         self.ack_port = ack_port
@@ -40,7 +44,14 @@ class TensorProducer:
 
         self.data_loader = data_loader
         self.data_loader_len = len(self.data_loader)
-        self.data_loader_iter = iter(self.data_loader)
+        try:
+            self.data_loader_iter = iter(self.data_loader)
+        except TypeError:
+            print("TensorSocket: DataLoader is already iterable")
+            self.data_loader_iter = self.data_loader
+
+        self.clip = clip
+        self.online = online
 
         self.index = 0
         self.consumer_count = 0
@@ -116,7 +127,9 @@ class TensorProducer:
         return self
 
     def __next__(self):
-        # end of data loader
+        return self.get_sample()
+
+    def get_sample(self):
         if self.index >= self.data_loader_len:
             self.index = 0
             self.epoch += 1
@@ -140,48 +153,68 @@ class TensorProducer:
             logger.info("Rubberbanding")
             self.rb_running = True
             self.buffer_idx = 0
+        try:
+            # add CPU tensors to rubberband buffer
+            if not self.rb_running:
+                inputs, labels = next(self.data_loader_iter)
+                self.rb_buffer.append((current_batch_index, inputs, labels))
 
-        # add CPU tensors to rubberband buffer
-        if not self.rb_running:
-            inputs, labels = next(self.data_loader_iter)
-            self.rb_buffer.append((current_batch_index, inputs, labels))
+            # if buffer full, pop from end
+            if len(self.rb_buffer) > self.rb_max_len:
+                _ = self.rb_buffer.pop(-1)
 
-        # if buffer full, pop from end
-        if len(self.rb_buffer) > self.rb_max_len:
-            _ = self.rb_buffer.pop(-1)
+            if self.rb_running:
+                current_batch_index, inputs, labels = self.rb_buffer[self.buffer_idx]
+                self.buffer_idx += 1
 
-        if self.rb_running:
-            current_batch_index, inputs, labels = self.rb_buffer[self.buffer_idx]
-            self.buffer_idx += 1
+            if self.clip:
+                if self.online:
+                    text, image = labels, inputs # text and image inverted
+                    image = image.to(device("cuda"))
+                    image_embed, _ = self.clip.embed_image(image)
+                else:
+                    text, image_embed = labels, inputs # text and image inverted
+                    image_embed = image_embed.to(device("cuda"))
+                text = text.to(device("cuda"))
+                text_embed, text_encodings = self.clip.embed_text(text)
 
-        self._broadcast(self.epoch, current_batch_index, inputs, labels)
-        self._handle_acks()
+                payload = dict(text_embed=text_embed, text_encodings=text_encodings, image_embed=image_embed)
+            else:
+                payload = dict(inputs=inputs, labels=labels)
 
-        if not self.rb_running:
-            self.index += 1
+            #self._broadcast(self.epoch, current_batch_index, inputs, labels)
+            #self._broadcast(self.epoch, current_batch_index, text_embed, text_encodings, image_embed)
+            self._broadcast(self.epoch, current_batch_index, payload)
+            self._handle_acks()
 
-        if len(self.rb_buffer) == self.buffer_idx:
-            self.rb_running = False
+            if not self.rb_running:
+                self.index += 1
+
+            if len(self.rb_buffer) == self.buffer_idx:
+                self.rb_running = False
+            # first batch, return starting time. only relevant for dalle2
+            if current_batch_index == 0:
+                return time.time()
+        except StopIteration:
+            self.socket.send_pyobj({"stop_iteration": 1})
+            raise StopIteration
 
     def _broadcast(
         self,
         current_epoch: int,
         current_batch_index: int,
-        inputs: Tensor,
-        labels: Tensor,
+        payload: dict,
     ):
-        inputs_gpu = inputs.to(device("cuda"))
-        labels_gpu = labels.to(device("cuda"))
+        def pack_tensor(t: Tensor):
+            t = t.to(device("cuda"))
+            t = TensorPayload(t)
+            return t
 
-        inputs_payload = TensorPayload(inputs_gpu)
-        labels_payload = TensorPayload(labels_gpu)
+        payload = {k: pack_tensor(v) for k, v in payload.items()}
 
-        payload = {
-            "current_epoch": current_epoch,
-            "current_batch_index": current_batch_index,
-            "inputs": inputs_payload,
-            "labels": labels_payload,
-        }
+        payload = dict(**payload,
+                       current_epoch=current_epoch,
+                       current_batch_index=current_batch_index)
 
         if current_batch_index % 100 == 0:
             logger.info(
@@ -193,7 +226,7 @@ class TensorProducer:
 
     def _handle_acks(self):
         while True:
-            if self.ack_socket.poll(5000, zmq.POLLIN):
+            if self.ack_socket.poll(10000, zmq.POLLIN):
                 (
                     consumer_index,
                     batch_count,

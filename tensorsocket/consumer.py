@@ -1,11 +1,11 @@
 import logging
 import sys
+import threading
 import uuid
+from queue import Queue
 
 import zmq
 from zmq import devices
-from queue import Queue
-import threading
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -95,10 +95,13 @@ class TensorConsumer:
             if cuda_tensor_info.get("data_loader_len"):
                 continue
 
-            current_epoch = cuda_tensor_info["current_epoch"]
-            batch_idx = cuda_tensor_info["current_batch_index"]
-            inputs = cuda_tensor_info["inputs"].tensor
-            labels = cuda_tensor_info["labels"].tensor
+            if cuda_tensor_info.get("stop_iteration"):
+                raise StopIteration
+
+            current_epoch = cuda_tensor_info.pop("current_epoch")
+            batch_idx = cuda_tensor_info.pop("current_batch_index")
+
+            batch = (v.tensor for k, v in cuda_tensor_info.items())
 
             if current_epoch != self.epoch:
                 self.epoch = current_epoch
@@ -109,4 +112,4 @@ class TensorConsumer:
             )
             if batch_idx == self.batch_count:
                 self.batch_count += 1
-                return (inputs, labels)
+                return batch
