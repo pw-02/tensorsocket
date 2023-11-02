@@ -1,7 +1,7 @@
 """Data loading orchestrator for separating loading and training into different processes, sharing data one-to-many and connected via TCP."""
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
-from .producer import TensorProducer
 from .consumer import TensorConsumer
 from .payload import TensorPayload
+from .producer import TensorProducer
