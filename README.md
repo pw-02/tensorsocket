@@ -87,5 +87,3 @@ for batch_idx, (input, target) in enumerate(data_loader):
     ...
 
 ```
-
-## Features
