@@ -1,8 +1,8 @@
 import logging
 import threading
 import time
-
 import zmq
+
 from torch import Tensor, device
 from tornado import ioloop
 from zmq.eventloop import zmqstream
@@ -23,8 +23,8 @@ class TensorProducer:
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
         rubber_band_pct: int = 0.02,
-        clip = None,
-        online = False,
+        clip=None,
+        online=False,
     ):
         """
         Data loader that sends inputs and labels over tcp to training processes (consumers).
@@ -69,14 +69,18 @@ class TensorProducer:
 
         # Heartbeat monitor
         self.hb = None
-        self.heartbeat_thread = threading.Thread(target=self._start_heartbeat, args=(), daemon=True)
+        self.heartbeat_thread = threading.Thread(
+            target=self._start_heartbeat, args=(), daemon=True
+        )
         self.heartbeat_thread.start()
 
         while self.hb is None:
             time.sleep(0.2)
 
         self._heartbeat_monitor_alive = True
-        self.heartbeat_monitor_thread = threading.Thread(target=self._heartbeat_monitor, args=(), daemon=True)
+        self.heartbeat_monitor_thread = threading.Thread(
+            target=self._heartbeat_monitor, args=(), daemon=True
+        )
         self.heartbeat_monitor_thread.start()
 
         # Dataset logic
@@ -87,7 +91,9 @@ class TensorProducer:
         self.rb_buffer = list()
         self.rb_max_len = rubber_band_pct * self.data_loader_len
         self.rb_running = False
-        self.buffer_idx = 0 # the current batch in the buffer we are sending to the consumers
+        self.buffer_idx = (
+            0  # the current batch in the buffer we are sending to the consumers
+        )
 
     def _start_heartbeat(self):
         self.loop = ioloop.IOLoop()
@@ -169,21 +175,25 @@ class TensorProducer:
 
             if self.clip:
                 if self.online:
-                    text, image = labels, inputs # text and image inverted
+                    text, image = labels, inputs  # text and image inverted
                     image = image.to(device("cuda"))
                     image_embed, _ = self.clip.embed_image(image)
                 else:
-                    text, image_embed = labels, inputs # text and image inverted
+                    text, image_embed = labels, inputs  # text and image inverted
                     image_embed = image_embed.to(device("cuda"))
                 text = text.to(device("cuda"))
                 text_embed, text_encodings = self.clip.embed_text(text)
 
-                payload = dict(text_embed=text_embed, text_encodings=text_encodings, image_embed=image_embed)
+                payload = dict(
+                    text_embed=text_embed,
+                    text_encodings=text_encodings,
+                    image_embed=image_embed,
+                )
             else:
                 payload = dict(inputs=inputs, labels=labels)
 
-            #self._broadcast(self.epoch, current_batch_index, inputs, labels)
-            #self._broadcast(self.epoch, current_batch_index, text_embed, text_encodings, image_embed)
+            # self._broadcast(self.epoch, current_batch_index, inputs, labels)
+            # self._broadcast(self.epoch, current_batch_index, text_embed, text_encodings, image_embed)
             self._broadcast(self.epoch, current_batch_index, payload)
             self._handle_acks()
 
@@ -206,15 +216,17 @@ class TensorProducer:
         payload: dict,
     ):
         def pack_tensor(t: Tensor):
-            t = t.to(device("cuda"))
+            # t = t.to(device("cuda"))
             t = TensorPayload(t)
             return t
 
         payload = {k: pack_tensor(v) for k, v in payload.items()}
 
-        payload = dict(**payload,
-                       current_epoch=current_epoch,
-                       current_batch_index=current_batch_index)
+        payload = dict(
+            **payload,
+            current_epoch=current_epoch,
+            current_batch_index=current_batch_index,
+        )
 
         if current_batch_index % 100 == 0:
             logger.info(
