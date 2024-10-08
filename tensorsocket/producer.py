@@ -23,8 +23,7 @@ class TensorProducer:
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
         rubber_band_pct: int = 0.02,
-        clip=None,
-        online=False,
+        pack_fn=-1,
     ):
         """
         Data loader that sends inputs and labels over tcp to training processes (consumers).
@@ -35,8 +34,6 @@ class TensorProducer:
             ack_port (int, optional): Acknowledgement port. Defaults to 5556.
             heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
             rubber_band_pct (int, optional): Maximum allowed distance between consumers, in percent of training dataset size. Defaults to 0.02.
-            clip (optional): CLIP model that can embed images and text. Useful in DALLE2 training.
-            online (bool, optional): Whether to generate CLIP image embeddings online.
         """
         self.port = port
         self.ack_port = ack_port
@@ -50,8 +47,14 @@ class TensorProducer:
             print("TensorSocket: DataLoader is already iterable")
             self.data_loader_iter = self.data_loader
 
-        self.clip = clip
-        self.online = online
+        if pack_fn == -1:
+
+            def pack(a, b):
+                a.to(device("cuda"))
+                b.to(device("cuda"))
+                return a, b
+
+            self.pack_fn = pack_fn
 
         self.index = 0
         self.consumer_count = 0
@@ -173,27 +176,8 @@ class TensorProducer:
                 current_batch_index, inputs, labels = self.rb_buffer[self.buffer_idx]
                 self.buffer_idx += 1
 
-            if self.clip:
-                if self.online:
-                    text, image = labels, inputs  # text and image inverted
-                    image = image.to(device("cuda"))
-                    image_embed, _ = self.clip.embed_image(image)
-                else:
-                    text, image_embed = labels, inputs  # text and image inverted
-                    image_embed = image_embed.to(device("cuda"))
-                text = text.to(device("cuda"))
-                text_embed, text_encodings = self.clip.embed_text(text)
+            payload = dict(inputs=inputs, labels=labels)
 
-                payload = dict(
-                    text_embed=text_embed,
-                    text_encodings=text_encodings,
-                    image_embed=image_embed,
-                )
-            else:
-                payload = dict(inputs=inputs, labels=labels)
-
-            # self._broadcast(self.epoch, current_batch_index, inputs, labels)
-            # self._broadcast(self.epoch, current_batch_index, text_embed, text_encodings, image_embed)
             self._broadcast(self.epoch, current_batch_index, payload)
             self._handle_acks()
 
