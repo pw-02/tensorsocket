@@ -13,7 +13,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-logger = logging.getLogger("tensorshare")
+logger = logging.getLogger("tensorsocket")
 logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://localhost"
 

@@ -25,7 +25,7 @@ from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import create_model
 
-from tensorshare.producer import TensorProducer
+from tensorsocket.producer import TensorProducer
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -851,7 +851,7 @@ group.add_argument(
     default=False,
     help="log training and validation metrics to wandb",
 )
-#group.add_argument("--gpu-prefetch", action="store_true", default=False)
+# group.add_argument("--gpu-prefetch", action="store_true", default=False)
 group.add_argument("--gpu-prefetch", default=0, type=int)
 
 
