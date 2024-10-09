@@ -62,7 +62,7 @@ class TensorProducer:
         self.pack_fn = pack_fn
 
         self.index = 0
-        self.consumer_count = 0
+        self.consumers = []
         self.context = zmq.Context()
 
         # Send batches via
@@ -119,8 +119,8 @@ class TensorProducer:
 
     def _heartbeat_monitor(self):
         while True:
-            if len(self.hb.hearts) != self.consumer_count:
-                if len(self.hb.hearts) > self.consumer_count:
+            if len(self.hb.hearts) != len(self.consumers):
+                if len(self.hb.hearts) > len(self.consumers):
                     self._set_consumer_len()
                 self._set_consumer_count(len(self.hb.hearts))
             if not self._heartbeat_monitor_alive:
@@ -134,7 +134,9 @@ class TensorProducer:
         self.heartbeat_monitor_thread.join()
 
     def _set_consumer_count(self, new_consumer_count):
-        self.consumer_count = new_consumer_count
+        # self.consumer_count = new_consumer_count
+        print("consumer count", self.hb.hearts)
+        self.consumers = [0 for _ in self.hb.hearts]
 
     def __iter__(self):
         self.data_loader_iter = iter(self.data_loader)
@@ -160,8 +162,8 @@ class TensorProducer:
         # if we are relatively early in the epoch, allow for new proc to catch up
         # also reset buffer index to handle if new consumers keep joining in
         if (
-            (self.consumer_count > 0)
-            and (len(self.hb.hearts) > self.consumer_count)
+            (len(self.consumers) > 0)  # TODO: remove
+            and (len(self.hb.hearts) > len(self.consumers))
             and (current_batch_index < self.rb_max_len)
         ):
             logger.info("Rubberbanding")
@@ -204,7 +206,7 @@ class TensorProducer:
     ):
 
         payload = dict(
-            self.pack_fn(data),
+            data=self.pack_fn(data),
             current_epoch=current_epoch,
             current_batch_index=current_batch_index,
         )
@@ -233,15 +235,16 @@ class TensorProducer:
                 )
                 self.ack_count += 1
                 # received all Acks, can go to next batch
-                if self.ack_count == self.consumer_count:
+                if self.ack_count == len(self.consumers):
                     self.ack_count = 0
                     break
             else:
                 print("Timeout on Ack, assuming consumer is dead")
-                self.consumer_count -= 1
+                # self.consumer_count -= 1 TODO: fix
+                self._set_consumer_count(len(self.hb.hearts))
 
     def __len__(self):
         return self.data_loader_len
 
-    def _set_consumer_len(self):
+    def _set_consumer_len(self):  # TODO: change (name to send?)
         self.socket.send_pyobj({"data_loader_len": self.__len__()})

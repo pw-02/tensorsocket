@@ -112,7 +112,7 @@ class TensorConsumer:
 
             batch = self.unpack_fn(payload["data"])
 
-            if current_epoch != self.epoch:
+            if current_epoch != self.epoch:  # TODO: make epoch count flexible
                 self.epoch = current_epoch
                 self.batch_count = 0
 

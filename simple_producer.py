@@ -10,7 +10,7 @@ Please check out simple_consumer.py for the paired consumer script.
 
 
 class DummyLoader:
-    def __init__(self, length=100000):
+    def __init__(self, length=1000000):
         self.length = length
 
     def __len__(self):
@@ -26,9 +26,10 @@ class DummyLoader:
 data_loader = DummyLoader()
 
 
-producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02)
+producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.2)
 
-for _ in producer:
-    pass
+for epoch in range(10):
+    for _ in producer:
+        pass
 producer.join()
 print("finished")
