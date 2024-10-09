@@ -7,6 +7,8 @@ from queue import Queue
 import zmq
 from zmq import devices
 
+from .payload import TensorPayload
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     level=logging.DEBUG,
@@ -18,6 +20,10 @@ logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://localhost"
 
 
+def unpack(data: tuple):
+    return tuple((t.tensor if isinstance(t, TensorPayload) else t for t in data))
+
+
 class TensorConsumer:
     def __init__(
         self,
@@ -25,6 +31,7 @@ class TensorConsumer:
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
         max_buffer_size: int = 10,
+        unpack_fn=unpack,
     ):
         """Data loader (iterator) that receives inputs and labels over tcp.
 
@@ -34,6 +41,8 @@ class TensorConsumer:
             heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
             max_buffer_size (int, optional): How many batches of data to hold in consumer buffer. Defaults to 10.
         """
+        self.unpack_fn = unpack_fn
+
         self.port = port
         self.ack_port = ack_port
         self.heart_ports = heart_ports
@@ -91,17 +100,17 @@ class TensorConsumer:
 
     def __next__(self):
         while True:
-            cuda_tensor_info = self.buffer.get()  # This will block if buffer is empty
-            if cuda_tensor_info.get("data_loader_len"):
+            payload = self.buffer.get()  # This will block if buffer is empty
+            if payload.get("data_loader_len"):
                 continue
 
-            if cuda_tensor_info.get("stop_iteration"):
+            if payload.get("stop_iteration"):
                 raise StopIteration
 
-            current_epoch = cuda_tensor_info.pop("current_epoch")
-            batch_idx = cuda_tensor_info.pop("current_batch_index")
+            current_epoch = payload["current_epoch"]
+            batch_idx = payload["current_batch_index"]
 
-            batch = (v.tensor for k, v in cuda_tensor_info.items())
+            batch = self.unpack_fn(payload["data"])
 
             if current_epoch != self.epoch:
                 self.epoch = current_epoch

@@ -3,7 +3,7 @@ import threading
 import time
 import zmq
 
-from torch import Tensor, device
+from torch import Tensor, device, cuda
 from tornado import ioloop
 from zmq.eventloop import zmqstream
 
@@ -15,6 +15,18 @@ logger.setLevel(logging.INFO)
 LOCALHOST = "tcp://*"
 
 
+def process_tensor(tensor):
+    if isinstance(tensor, Tensor):
+        if cuda.is_available():
+            tensor = tensor.to(device="cuda")
+        tensor = TensorPayload(tensor)
+    return tensor
+
+
+def pack(data: tuple):
+    return tuple((process_tensor(t) for t in data))
+
+
 class TensorProducer:
     def __init__(
         self,
@@ -23,7 +35,7 @@ class TensorProducer:
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
         rubber_band_pct: int = 0.02,
-        pack_fn=-1,
+        pack_fn=pack,
     ):
         """
         Data loader that sends inputs and labels over tcp to training processes (consumers).
@@ -47,14 +59,7 @@ class TensorProducer:
             print("TensorSocket: DataLoader is already iterable")
             self.data_loader_iter = self.data_loader
 
-        if pack_fn == -1:
-
-            def pack(a, b):
-                a.to(device("cuda"))
-                b.to(device("cuda"))
-                return a, b
-
-            self.pack_fn = pack_fn
+        self.pack_fn = pack_fn
 
         self.index = 0
         self.consumer_count = 0
@@ -165,27 +170,25 @@ class TensorProducer:
         try:
             # add CPU tensors to rubberband buffer
             if not self.rb_running:
-                inputs, labels = next(self.data_loader_iter)
-                self.rb_buffer.append((current_batch_index, inputs, labels))
+                data = next(self.data_loader_iter)
+                self.rb_buffer.append((current_batch_index, data))
 
-            # if buffer full, pop from end
-            if len(self.rb_buffer) > self.rb_max_len:
-                _ = self.rb_buffer.pop(-1)
+                # if buffer full, pop from end
+                if len(self.rb_buffer) > self.rb_max_len:
+                    _ = self.rb_buffer.pop(-1)
 
-            if self.rb_running:
-                current_batch_index, inputs, labels = self.rb_buffer[self.buffer_idx]
+            else:
+                current_batch_index, data = self.rb_buffer[self.buffer_idx]
                 self.buffer_idx += 1
 
-            payload = dict(inputs=inputs, labels=labels)
-
-            self._broadcast(self.epoch, current_batch_index, payload)
+            self._broadcast(self.epoch, current_batch_index, data)
             self._handle_acks()
 
             if not self.rb_running:
                 self.index += 1
-
-            if len(self.rb_buffer) == self.buffer_idx:
+            elif len(self.rb_buffer) == self.buffer_idx:
                 self.rb_running = False
+
             # first batch, return starting time. only relevant for dalle2
             if current_batch_index == 0:
                 return time.time()
@@ -197,17 +200,11 @@ class TensorProducer:
         self,
         current_epoch: int,
         current_batch_index: int,
-        payload: dict,
+        data: tuple,
     ):
-        def pack_tensor(t: Tensor):
-            # t = t.to(device("cuda"))
-            t = TensorPayload(t)
-            return t
-
-        payload = {k: pack_tensor(v) for k, v in payload.items()}
 
         payload = dict(
-            **payload,
+            self.pack_fn(data),
             current_epoch=current_epoch,
             current_batch_index=current_batch_index,
         )
