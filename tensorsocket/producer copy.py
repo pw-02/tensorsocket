@@ -192,9 +192,13 @@ class TensorProducer:
                 current_batch_index, data = self.rb_buffer[self.buffer_idx]
                 self.buffer_idx += 1
 
-            expected = {x: y for x, y in self.consumers.items()}
-            self._broadcast(self.epoch, current_batch_index, data)
-            self.consumers = self._handle_acks(expected)
+            while True:
+                expected = {x: y for x, y in self.consumers.items()}
+                self._broadcast(self.epoch, current_batch_index, data)
+                ack_result = self._handle_acks(expected)
+                if "FAILED" not in ack_result:
+                    self.consumers = ack_result
+                    break
 
             if not self.rb_running:
                 self.index += 1
@@ -276,11 +280,12 @@ class TensorProducer:
                     expected,
                     result,
                 )
+                return {"FAILED": 0}
                 # self.consumer_count -= 1 TODO: fix
 
                 # self._set_consumer_count(len(self.hb.hearts))
                 # expected = min(expected, len(self.hb.hearts))
-                expected = {}
+                # expected = {}
 
     def __len__(self):
         return self.data_loader_len

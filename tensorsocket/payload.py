@@ -16,7 +16,10 @@ class TensorPayload:
             self.payload = tensor
 
             if "storage_cls" in self.payload:
-                self._tensor = rebuild_cuda_tensor(Tensor, **self.payload)
+                try:
+                    self._tensor = rebuild_cuda_tensor(Tensor, **self.payload)
+                except RuntimeError as e:
+                    self._tensor = tensor
             else:
                 self._tensor = rebuild_tensor(
                     tensor["cls"], tensor["storage"], tensor["metadata"]

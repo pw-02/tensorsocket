@@ -83,14 +83,34 @@ class TensorConsumer:
     def _fetch_loop(self):
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
+            print(cuda_tensor_info)
             self.buffer.put(cuda_tensor_info)
+
+            if "data_loader_len" in cuda_tensor_info:
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(str(self.batch_count).encode("utf-8")),
+                    ]
+                )
+                return
+
+
+            # rubberbanding issue here
 
             self.ack_socket.send_multipart(
                 [
                     bytes(str(self.consumer_id).encode("utf-8")),
-                    bytes(str(self.batch_count).encode("utf-8")),
+                    bytes(str(cuda_tensor_info["current_batch_index"]).encode("utf-8")),
                 ]
             )
+
+            # self.ack_socket.send_multipart(
+            #     [
+            #         bytes(str(self.consumer_id).encode("utf-8")),
+            #         bytes(str(self.batch_count).encode("utf-8")),
+            #     ]
+            # )
 
     def __iter__(self):
         return self
@@ -98,7 +118,7 @@ class TensorConsumer:
     def __len__(self):
         return self.data_loader_len
 
-    def __next__(self):
+    def __next__(self): #TODO: move stuff to fetch loop
         while True:
             payload = self.buffer.get()  # This will block if buffer is empty
             if payload.get("data_loader_len"):
