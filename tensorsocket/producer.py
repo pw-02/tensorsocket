@@ -108,11 +108,12 @@ class TensorProducer:
         context = zmq.Context()
         pub = context.socket(zmq.PUB)
         pub.bind(f"{LOCALHOST}:{self.heart_ports[0]}")
-        router = context.socket(zmq.ROUTER)
-        router.bind(f"{LOCALHOST}:{self.heart_ports[1]}")
+        sub = context.socket(zmq.SUB)
+        sub.bind(f"{LOCALHOST}:{self.heart_ports[1]}")
+        sub.subscribe(b"")
 
         outstream = zmqstream.ZMQStream(pub, self.loop)
-        instream = zmqstream.ZMQStream(router, self.loop)
+        instream = zmqstream.ZMQStream(sub, self.loop)
 
         self.hb = HeartBeater(self.loop, outstream, instream)
         self.loop.start()
@@ -122,7 +123,7 @@ class TensorProducer:
             if len(self.hb.hearts) != len(self.consumers) + len(self.new_consumers):
                 if len(self.hb.hearts) > len(self.consumers) + len(self.new_consumers):
                     self._set_consumer_len()
-                    self.new_consumers += [(-1, 0, 0)] # TODO: change
+                    self.new_consumers += [(-1, 0, 0)]  # TODO: change
                 # self._set_consumer_count(len(self.hb.hearts))
             if not self._heartbeat_monitor_alive:
                 break
@@ -147,7 +148,7 @@ class TensorProducer:
         # adjustment = len(self.consumers)
         # self.consumers += self.new_consumers
         if len(self.new_consumers):
-            self.consumers[-1] = (0,0)
+            self.consumers[-1] = (0, 0)
             self.new_consumers = []
         # adjustment = len(self.consumers) - adjustment
         # self.new_consumers = self.new_consumers[adjustment:]
@@ -221,7 +222,7 @@ class TensorProducer:
             current_batch_index=current_batch_index,
         )
 
-        if True:#current_batch_index % 100 == 0:
+        if True:  # current_batch_index % 100 == 0:
             logger.info(
                 f"current_batch_index {current_batch_index}, "
                 f"buffer size: {len(self.rb_buffer)}"
@@ -255,14 +256,20 @@ class TensorProducer:
 
                 if consumer_index in expected:
                     # if (0, batch_count) == expected[consumer_index]:
-                    if True:#batch_count >= expected[consumer_index][1]: TODO: missing safeguard
+                    if (
+                        True
+                    ):  # batch_count >= expected[consumer_index][1]: TODO: missing safeguard
                         print((0, batch_count), "FOUND in", expected, result)
                         expected.pop(consumer_index)
                         result[consumer_index] = (0, batch_count + 1)
                     else:
-                        print(consumer_index, (0, batch_count), "not in", expected, result)
+                        print(
+                            consumer_index, (0, batch_count), "not in", expected, result
+                        )
                 else:
-                    if -1 in expected:# and (0, batch_count) == (0,0): TODO: missing safeguard
+                    if (
+                        -1 in expected
+                    ):  # and (0, batch_count) == (0,0): TODO: missing safeguard
                         print("Added new consumer ", consumer_index)
                         expected.pop(-1)
                         result[consumer_index] = (0, batch_count + 1)

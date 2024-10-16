@@ -8,6 +8,7 @@ import zmq
 from zmq import devices
 
 from .payload import TensorPayload
+from .heartbeat import Heart
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -58,11 +59,13 @@ class TensorConsumer:
         self.ack_socket.connect(f"{LOCALHOST}:{self.ack_port}")
 
         # Heartbeat
-        self.dev = devices.ThreadDevice(zmq.FORWARDER, zmq.SUB, zmq.DEALER)
-        self.dev.setsockopt_in(zmq.SUBSCRIBE, b"")
-        self.dev.connect_in(f"{LOCALHOST}:{self.heart_ports[0]}")
-        self.dev.connect_out(f"{LOCALHOST}:{self.heart_ports[1]}")
-        self.dev.start()
+        self.heart = Heart(
+            self.consumer_id,
+            f"{LOCALHOST}:{self.heart_ports[0]}",
+            f"{LOCALHOST}:{self.heart_ports[1]}",
+        )
+        self.heart.daemon = True
+        self.heart.start()
 
         # On spawn, fetch payloads on socket until we get one with the data loader length
         while True:
@@ -95,7 +98,6 @@ class TensorConsumer:
                 )
                 return
 
-
             # rubberbanding issue here
 
             self.ack_socket.send_multipart(
@@ -118,7 +120,7 @@ class TensorConsumer:
     def __len__(self):
         return self.data_loader_len
 
-    def __next__(self): #TODO: move stuff to fetch loop
+    def __next__(self):  # TODO: move stuff to fetch loop
         while True:
             payload = self.buffer.get()  # This will block if buffer is empty
             if payload.get("data_loader_len"):
