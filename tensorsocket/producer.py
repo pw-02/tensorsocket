@@ -56,15 +56,14 @@ class TensorProducer:
         try:
             self.data_loader_iter = iter(self.data_loader)
         except TypeError:
-            print("TensorSocket: DataLoader is already iterable")
+            logger.warning("TensorSocket: DataLoader is already iterable")
             self.data_loader_iter = self.data_loader
 
         self.pack_fn = pack_fn
 
         self.index = 0
-        self.consumers = {}
-        self.new_consumers = []
         self.context = zmq.Context()
+        self.consumers = {}
 
         # Send batches via
         self.socket = self.context.socket(zmq.PUB)
@@ -99,9 +98,6 @@ class TensorProducer:
         self.rb_buffer = list()
         self.rb_max_len = rubber_band_pct * self.data_loader_len
         self.rb_running = False
-        self.buffer_idx = (
-            0  # the current batch in the buffer we are sending to the consumers
-        )
 
     def _start_heartbeat(self):
         self.loop = ioloop.IOLoop()
@@ -120,11 +116,6 @@ class TensorProducer:
 
     def _heartbeat_monitor(self):
         while True:
-            if len(self.hb.hearts) != len(self.consumers) + len(self.new_consumers):
-                if len(self.hb.hearts) > len(self.consumers) + len(self.new_consumers):
-                    self._set_consumer_len()
-                    self.new_consumers += [(-1, 0, 0)]  # TODO: change
-                # self._set_consumer_count(len(self.hb.hearts))
             if not self._heartbeat_monitor_alive:
                 break
             time.sleep(1)
@@ -135,24 +126,11 @@ class TensorProducer:
         self._heartbeat_monitor_alive = False
         self.heartbeat_monitor_thread.join()
 
-    # def _set_consumer_count(self, new_consumer_count):
-    #     # self.consumer_count = new_consumer_count
-    #     print("consumer count", self.hb.hearts)
-    #     self.consumers = [[0, 0] for _ in self.hb.hearts]
-
     def __iter__(self):
         self.data_loader_iter = iter(self.data_loader)
         return self
 
     def __next__(self):
-        # adjustment = len(self.consumers)
-        # self.consumers += self.new_consumers
-        if len(self.new_consumers):
-            self.consumers[-1] = (0, 0)
-            self.new_consumers = []
-        # adjustment = len(self.consumers) - adjustment
-        # self.new_consumers = self.new_consumers[adjustment:]
-
         return self.get_sample()
 
     def get_sample(self):
@@ -163,48 +141,56 @@ class TensorProducer:
             raise StopIteration
 
         # idle when no consumers attached
-        elif not len(self.consumers):
+        elif not len(self.hb.consumers):
             logger.info("No consumers, waiting ...")
             time.sleep(0.5)
             return
 
+        # clean up dead consumers
+        for consumer in list(self.consumers.keys()):
+            if consumer not in self.hb.consumers:
+                self.consumers.pop(consumer)
+
         current_batch_index = self.index
-        # if we are relatively early in the epoch, allow for new proc to catch up
-        # also reset buffer index to handle if new consumers keep joining in
-        if (
-            (len(self.consumers) > 0)  # TODO: remove
-            and (len(self.hb.hearts) > len(self.consumers))
-            and (current_batch_index < self.rb_max_len)
-        ):
-            logger.info("Rubberbanding")
-            self.rb_running = True
-            self.buffer_idx = 0
+
+        # TODO add flex rubberbanding midrun
+
         try:
-            # add CPU tensors to rubberband buffer
-            if not self.rb_running:
+            send_len = False
+            expected = [str(x) for x in self.hb.consumers]
+
+            for consumer in expected:
+                if str(consumer) not in self.consumers:
+                    self.consumers[str(consumer)] = 0
+                    send_len = True
+
+            if send_len:
+                print(expected, self.consumers)
+                self._send_consumer_len()
+
+            # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
+            if (
+                (self.rb_buffer)
+                and ((min_batch := min(self.consumers.values())) < current_batch_index)
+                and (current_batch_index < self.rb_max_len)
+            ):
+                current_batch_index, data = self.rb_buffer[min_batch]
+            else:
                 data = next(self.data_loader_iter)
+
+                # add CPU tensors to rubberband buffer TODO: make sure not gpu
                 self.rb_buffer.append((current_batch_index, data))
 
                 # if buffer full, pop from end
                 if len(self.rb_buffer) > self.rb_max_len:
                     _ = self.rb_buffer.pop(-1)
 
-            else:
-                current_batch_index, data = self.rb_buffer[self.buffer_idx]
-                self.buffer_idx += 1
-
-            expected = {x: y for x, y in self.consumers.items()}
-            self._broadcast(self.epoch, current_batch_index, data)
-            self.consumers = self._handle_acks(expected)
-
-            if not self.rb_running:
                 self.index += 1
-            elif len(self.rb_buffer) == self.buffer_idx:
-                self.rb_running = False
 
-            # first batch, return starting time. only relevant for dalle2
-            if current_batch_index == 0:
-                return time.time()
+            expected = [x for x in expected]
+            self._broadcast(self.epoch, current_batch_index, data)
+            self._handle_acks(expected)
+
         except StopIteration:
             self.socket.send_pyobj({"stop_iteration": 1})
             raise StopIteration
@@ -222,7 +208,7 @@ class TensorProducer:
             current_batch_index=current_batch_index,
         )
 
-        if True:  # current_batch_index % 100 == 0:
+        if current_batch_index % 100 == 0:
             logger.info(
                 f"current_batch_index {current_batch_index}, "
                 f"buffer size: {len(self.rb_buffer)}"
@@ -231,12 +217,10 @@ class TensorProducer:
         self.socket.send_pyobj(payload)
 
     def _handle_acks(self, expected: list):
-        result = {}
-
         while True:
             # received all Acks, can go to next batch
             if not len(expected):
-                return result
+                return
 
             if self.ack_socket.poll(10000, zmq.POLLIN):
                 (
@@ -247,6 +231,7 @@ class TensorProducer:
                 )  # wait for consumer acknowledgement
 
                 batch_count = int(batch_count)
+                consumer_index = str(consumer_index)
 
                 logger.info(
                     f"Consumer: {consumer_index}, "
@@ -255,42 +240,25 @@ class TensorProducer:
                 )
 
                 if consumer_index in expected:
-                    # if (0, batch_count) == expected[consumer_index]:
                     if (
-                        True
-                    ):  # batch_count >= expected[consumer_index][1]: TODO: missing safeguard
-                        print((0, batch_count), "FOUND in", expected, result)
-                        expected.pop(consumer_index)
-                        result[consumer_index] = (0, batch_count + 1)
+                        batch_count == self.consumers[consumer_index]
+                    ):  #  TODO: missing safeguard
+                        expected.remove(consumer_index)
+                        self.consumers[consumer_index] = batch_count + 1
                     else:
-                        print(
-                            consumer_index, (0, batch_count), "not in", expected, result
-                        )
-                else:
-                    if (
-                        -1 in expected
-                    ):  # and (0, batch_count) == (0,0): TODO: missing safeguard
-                        print("Added new consumer ", consumer_index)
-                        expected.pop(-1)
-                        result[consumer_index] = (0, batch_count + 1)
-                    else:
-                        print(consumer_index, "consumer not in", expected, result)
+                        expected.remove(consumer_index)
 
             else:
-                print(
+                logger.info(
                     "Timeout on Ack, assuming consumer is dead",
-                    len(self.hb.hearts),
+                    len(self.hb.consumers),
                     expected,
-                    result,
                 )
-                # self.consumer_count -= 1 TODO: fix
-
-                # self._set_consumer_count(len(self.hb.hearts))
-                # expected = min(expected, len(self.hb.hearts))
                 expected = {}
 
     def __len__(self):
         return self.data_loader_len
 
-    def _set_consumer_len(self):  # TODO: change (name to send?)
+    def _send_consumer_len(self):
+        logger.info("Sending data loader length")
         self.socket.send_pyobj({"data_loader_len": self.__len__()})

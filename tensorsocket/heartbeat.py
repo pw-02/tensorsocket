@@ -59,11 +59,14 @@ class HeartBeater:
         self.hearts.remove(heart)
 
     def handle_pong(self, msg):
-        # print("pong", msg)
         if float(msg[1]) == self.lifetime:
             self.responses.add(msg[0])
         else:
             pass
+
+    @property
+    def consumers(self):
+        return [str(x) for x in self.hearts]
 
 
 class Heart(Thread):
@@ -94,10 +97,9 @@ class Heart(Thread):
             try:
                 event = self._in.poll(timeout=3000)
                 if event == 0:
-                    print("Connection Failed")
+                    pass  # Failed
                 else:
                     item = self._in.recv_multipart()  # flags=zmq.NOBLOCK)
-                    # print(item)
                     self._out.send_multipart([self._uuid] + item)
             except zmq.ZMQError:
                 time.sleep(0.01)  # Wait a little for next item to arrive

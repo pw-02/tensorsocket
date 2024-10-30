@@ -81,38 +81,48 @@ class TensorConsumer:
 
         # Logic
         self.batch_count = 0
+        self.batch_max = 0
         self.epoch = 0
 
     def _fetch_loop(self):
         while True:
+            # while not self.socket.poll(3000, zmq.POLLIN):
+            #     logger.info(f"Waiting for info {self.batch_count} {self.batch_max}")
             cuda_tensor_info = self.socket.recv_pyobj()
-            print(cuda_tensor_info)
-            self.buffer.put(cuda_tensor_info)
+            # logger.info(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
+                pass
+
+            # ignore and bounce back as others are banding
+            elif cuda_tensor_info["current_batch_index"] < self.batch_count:
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
                         bytes(str(self.batch_count).encode("utf-8")),
                     ]
                 )
-                return
 
-            # rubberbanding issue here
+            # dont accept batch if it is from the future
+            elif cuda_tensor_info["current_batch_index"] > self.batch_max + 1:
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(str(self.batch_count).encode("utf-8")),
+                    ]
+                )
 
-            self.ack_socket.send_multipart(
-                [
-                    bytes(str(self.consumer_id).encode("utf-8")),
-                    bytes(str(cuda_tensor_info["current_batch_index"]).encode("utf-8")),
-                ]
-            )
-
-            # self.ack_socket.send_multipart(
-            #     [
-            #         bytes(str(self.consumer_id).encode("utf-8")),
-            #         bytes(str(self.batch_count).encode("utf-8")),
-            #     ]
-            # )
+            else:
+                self.buffer.put(cuda_tensor_info)
+                self.batch_max = cuda_tensor_info["current_batch_index"]
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(
+                            str(cuda_tensor_info["current_batch_index"]).encode("utf-8")
+                        ),
+                    ]
+                )
 
     def __iter__(self):
         return self
