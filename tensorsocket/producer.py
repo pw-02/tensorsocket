@@ -11,7 +11,7 @@ from .heartbeat import HeartBeater
 from .payload import TensorPayload
 
 logger = logging.getLogger("tensorsocket")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://*"
 
 
@@ -165,7 +165,6 @@ class TensorProducer:
                     send_len = True
 
             if send_len:
-                print(expected, self.consumers)
                 self._send_consumer_len()
 
             # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
@@ -192,7 +191,7 @@ class TensorProducer:
             self._handle_acks(expected)
 
         except StopIteration:
-            self.socket.send_pyobj({"stop_iteration": 1})
+            self.socket.send_pyobj({"stop_iteration": 1})  # TODO: fix
             raise StopIteration
 
     def _broadcast(

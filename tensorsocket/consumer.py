@@ -86,13 +86,13 @@ class TensorConsumer:
 
     def _fetch_loop(self):
         while True:
-            # while not self.socket.poll(3000, zmq.POLLIN):
-            #     logger.info(f"Waiting for info {self.batch_count} {self.batch_max}")
             cuda_tensor_info = self.socket.recv_pyobj()
-            # logger.info(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
                 pass
+
+            elif "stop_iteration" in cuda_tensor_info:
+                self.buffer.put(cuda_tensor_info)
 
             # ignore and bounce back as others are banding
             elif cuda_tensor_info["current_batch_index"] < self.batch_count:
@@ -130,11 +130,9 @@ class TensorConsumer:
     def __len__(self):
         return self.data_loader_len
 
-    def __next__(self):  # TODO: move stuff to fetch loop
+    def __next__(self):
         while True:
             payload = self.buffer.get()  # This will block if buffer is empty
-            if payload.get("data_loader_len"):
-                continue
 
             if payload.get("stop_iteration"):
                 raise StopIteration
