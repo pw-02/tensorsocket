@@ -95,7 +95,7 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
 
             # ignore and bounce back as others are banding
-            elif cuda_tensor_info["current_batch_index"] < self.batch_count:
+            elif cuda_tensor_info["current_batch_index"] < self.batch_max:
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
