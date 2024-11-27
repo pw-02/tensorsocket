@@ -80,8 +80,8 @@ class TensorConsumer:
         self.fetch_thread.start()
 
         # Logic
-        self.batch_count = 0
-        self.batch_max = 0
+        self.batch_count = -1
+        self.batch_max = -1
         self.epoch = 0
 
     def _fetch_loop(self):
@@ -95,11 +95,11 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
 
             # ignore and bounce back as others are banding
-            elif cuda_tensor_info["current_batch_index"] < self.batch_max:
+            elif cuda_tensor_info["current_batch_index"] < self.batch_max + 1:
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
-                        bytes(str(self.batch_count).encode("utf-8")),
+                        bytes(str(self.batch_max).encode("utf-8")),
                     ]
                 )
 
@@ -108,19 +108,22 @@ class TensorConsumer:
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
-                        bytes(str(self.batch_count).encode("utf-8")),
+                        bytes(str(self.batch_max).encode("utf-8")),
                     ]
                 )
 
             else:
+                t = self.unpack_fn(cuda_tensor_info["data"])
+                # print(
+                #     cuda_tensor_info["current_batch_index"],
+                #     t[1][:5],
+                # )
                 self.buffer.put(cuda_tensor_info)
                 self.batch_max = cuda_tensor_info["current_batch_index"]
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
-                        bytes(
-                            str(cuda_tensor_info["current_batch_index"]).encode("utf-8")
-                        ),
+                        bytes(str(self.batch_max).encode("utf-8")),
                     ]
                 )
 
@@ -146,9 +149,9 @@ class TensorConsumer:
                 self.epoch = current_epoch
                 self.batch_count = 0
 
-            logger.info(
-                f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
-            )
-            if batch_idx == self.batch_count:
+            if batch_idx == self.batch_count + 1:
+                logger.info(
+                    f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
+                )
                 self.batch_count += 1
                 return batch

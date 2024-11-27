@@ -12,8 +12,11 @@ consumer = TensorConsumer("5556", "5557")
 for i, batch in enumerate(consumer):
     inputs, labels = batch
     if labels != None:
-        if not i % 100:
-            print(f"I:{i} -", labels[:5])
+        # if not i % 100:
+        if True:
+            print(f"I:{i:0>7} -", labels[:5])
+            pass
+            # print("\n", f"I:{i:0>7} -", labels[:5], "\n")
     else:
         print("Waiting ...")
     time.sleep(0.05)

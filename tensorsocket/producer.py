@@ -134,6 +134,11 @@ class TensorProducer:
         return self.get_sample()
 
     def get_sample(self):
+        # clean up dead consumers
+        for consumer in list(self.consumers.keys()):
+            if consumer not in self.hb.consumers:
+                self.consumers.pop(consumer)
+
         if self.index >= self.data_loader_len:
             self.index = 0
             self.epoch += 1
@@ -145,11 +150,6 @@ class TensorProducer:
             logger.info("No consumers, waiting ...")
             time.sleep(0.5)
             return
-
-        # clean up dead consumers
-        for consumer in list(self.consumers.keys()):
-            if consumer not in self.hb.consumers:
-                self.consumers.pop(consumer)
 
         current_batch_index = self.index
 
@@ -185,6 +185,8 @@ class TensorProducer:
                     _ = self.rb_buffer.pop(-1)
 
                 self.index += 1
+
+                current_batch_index, data = self.rb_buffer[min(self.consumers.values())]
 
             expected = [x for x in expected]
             self._broadcast(self.epoch, current_batch_index, data)

@@ -31,6 +31,6 @@ producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.2)
 for epoch in range(10):
     for i, _ in enumerate(producer):
         if not i % 100:
-            print(f"I:{i}", producer.consumers)
+            print(f"I:{i:0>7}", producer.consumers, producer.hb.consumers)
 producer.join()
 print("finished")
