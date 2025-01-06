@@ -3,7 +3,9 @@ import threading
 import time
 import zmq
 
-from torch import Tensor, device, cuda
+from collections import deque
+from dataclasses import dataclass, field
+from torch import Tensor, cuda
 from tornado import ioloop
 from zmq.eventloop import zmqstream
 
@@ -13,6 +15,44 @@ from .payload import TensorPayload
 logger = logging.getLogger("tensorsocket")
 logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://*"
+
+
+@dataclass
+class ConsumerProgress:
+    "Class for keeping track of consumers"
+
+    # id_queue: deque = field(
+    #     default_factory=lambda: deque(maxlen=10)
+    # )  # TODO: fix max len
+    # payload_queue: deque = field(
+    #     default_factory=lambda: deque(maxlen=10)
+    # )  # TODO: fix max len
+
+    id_queue: deque
+    payload_queue: deque
+
+    def add_batch(self, id, payload):
+        "Add an ID/payload pair to the progress counter. ID must be 1 higher than prev."
+
+        # TODO: assert on max?
+        assert id == self.batch_max
+        self.id_queue.append(id)
+        self.payload_queue.append(payload)
+
+    def remove_batch(self, id):
+        "Remove the leftmost ID/payload pair. ID must match arg0."
+
+        assert id == self.batch_count
+        self.id_queue.popleft()
+        self.payload_queue.popleft()
+
+    @property
+    def batch_count(self):
+        return self.id_queue[0]
+
+    @property
+    def batch_max(self):
+        return self.id_queue[-1] + 1 if self.id_queue else 0
 
 
 def process_tensor(tensor):
@@ -36,6 +76,7 @@ class TensorProducer:
         heart_ports: (int, int) = (4444, 4445),
         rubber_band_pct: int = 0.02,
         pack_fn=pack,
+        consumer_max_buffer_size=10,
     ):
         """
         Data loader that sends inputs and labels over tcp to training processes (consumers).
@@ -64,6 +105,7 @@ class TensorProducer:
         self.index = 0
         self.context = zmq.Context()
         self.consumers = {}
+        self.consumer_max_buffer_size = consumer_max_buffer_size
 
         # Send batches via
         self.socket = self.context.socket(zmq.PUB)
@@ -98,6 +140,8 @@ class TensorProducer:
         self.rb_buffer = list()
         self.rb_max_len = rubber_band_pct * self.data_loader_len
         self.rb_running = False
+
+        self.active_payloads = []
 
     def _start_heartbeat(self):
         self.loop = ioloop.IOLoop()
@@ -161,7 +205,10 @@ class TensorProducer:
 
             for consumer in expected:
                 if str(consumer) not in self.consumers:
-                    self.consumers[str(consumer)] = 0
+                    self.consumers[str(consumer)] = ConsumerProgress(
+                        deque(maxlen=self.consumer_max_buffer_size + 1),
+                        deque(maxlen=self.consumer_max_buffer_size + 1),
+                    )
                     send_len = True
 
             if send_len:
@@ -170,14 +217,17 @@ class TensorProducer:
             # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
             if (
                 (self.rb_buffer)
-                and ((min_batch := min(self.consumers.values())) < current_batch_index)
+                and (
+                    (min_batch := min([x.batch_max for x in self.consumers.values()]))
+                    < current_batch_index
+                )
                 and (current_batch_index < self.rb_max_len)
             ):
                 current_batch_index, data = self.rb_buffer[min_batch]
             else:
                 data = next(self.data_loader_iter)
 
-                # add CPU tensors to rubberband buffer TODO: make sure not gpu
+                # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
                 self.rb_buffer.append((current_batch_index, data))
 
                 # if buffer full, pop from end
@@ -186,11 +236,13 @@ class TensorProducer:
 
                 self.index += 1
 
-                current_batch_index, data = self.rb_buffer[min(self.consumers.values())]
+                # current_batch_index, data = self.rb_buffer[
+                #     min([c.batch_max for c in self.consumers.values()])
+                # ]  # TODO: fix when rband is full?
 
             expected = [x for x in expected]
-            self._broadcast(self.epoch, current_batch_index, data)
-            self._handle_acks(expected)
+            payload = self._broadcast(self.epoch, current_batch_index, data)
+            self._handle_acks(expected, current_batch_index, payload)
 
         except StopIteration:
             self.socket.send_pyobj({"stop_iteration": 1})  # TODO: fix
@@ -209,6 +261,8 @@ class TensorProducer:
             current_batch_index=current_batch_index,
         )
 
+        # self.active_payloads.append(payload)
+
         if current_batch_index % 100 == 0:
             logger.info(
                 f"current_batch_index {current_batch_index}, "
@@ -216,8 +270,14 @@ class TensorProducer:
             )
 
         self.socket.send_pyobj(payload)
+        return payload
 
-    def _handle_acks(self, expected: list):
+    def _handle_acks(
+        self,
+        expected: list,
+        current_batch_index: int,
+        payload: dict,
+    ):
         while True:
             # received all Acks, can go to next batch
             if not len(expected):
@@ -226,28 +286,31 @@ class TensorProducer:
             if self.ack_socket.poll(10000, zmq.POLLIN):
                 (
                     consumer_index,
-                    batch_count,
+                    batch_max,
+                    accepted,
                 ) = (
                     self.ack_socket.recv_multipart()
                 )  # wait for consumer acknowledgement
 
-                batch_count = int(batch_count)
+                batch_max = int(batch_max)
                 consumer_index = str(consumer_index)
 
                 logger.info(
                     f"Consumer: {consumer_index}, "
-                    f"batch count: {batch_count}, "
+                    f"batch count: {batch_max}, "
                     f"total batches: {self.data_loader_len}"
                 )
 
                 if consumer_index in expected:
-                    if (
-                        batch_count == self.consumers[consumer_index]
-                    ):  #  TODO: missing safeguard
-                        expected.remove(consumer_index)
-                        self.consumers[consumer_index] = batch_count + 1
-                    else:
-                        expected.remove(consumer_index)
+                    expected.remove(consumer_index)
+
+                if (
+                    accepted
+                    == b"1"
+                    # batch_max == self.consumers[consumer_index].batch_max
+                ):  #  TODO: missing safeguard
+                    print(consumer_index, batch_max)
+                    self.consumers[consumer_index].add_batch(batch_max, payload)
 
             else:
                 logger.info(
@@ -262,4 +325,9 @@ class TensorProducer:
 
     def _send_consumer_len(self):
         logger.info("Sending data loader length")
-        self.socket.send_pyobj({"data_loader_len": self.__len__()})
+        self.socket.send_pyobj(
+            {
+                "data_loader_len": self.__len__(),
+                "max_buffer_size": self.consumer_max_buffer_size,
+            }
+        )

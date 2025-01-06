@@ -31,7 +31,6 @@ class TensorConsumer:
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: (int, int) = (4444, 4445),
-        max_buffer_size: int = 10,
         unpack_fn=unpack,
     ):
         """Data loader (iterator) that receives inputs and labels over tcp.
@@ -40,7 +39,6 @@ class TensorConsumer:
             port (int, optional): Data transmission port. Defaults to 5555.
             ack_port (int, optional): Acknowledgement port. Defaults to 5556.
             heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
-            max_buffer_size (int, optional): How many batches of data to hold in consumer buffer. Defaults to 10.
         """
         self.unpack_fn = unpack_fn
 
@@ -58,8 +56,14 @@ class TensorConsumer:
         self.ack_socket = self.context.socket(zmq.PUB)
         self.ack_socket.connect(f"{LOCALHOST}:{self.ack_port}")
 
+        # Logic
+        self.batch_count = 0
+        self.batch_max = -1
+        self.epoch = 0
+
         # Heartbeat
         self.heart = Heart(
+            self,
             self.consumer_id,
             f"{LOCALHOST}:{self.heart_ports[0]}",
             f"{LOCALHOST}:{self.heart_ports[1]}",
@@ -72,17 +76,13 @@ class TensorConsumer:
             data = self.socket.recv_pyobj()
             if data.get("data_loader_len"):
                 self.data_loader_len = data.get("data_loader_len")
+                self.max_buffer_size = data.get("max_buffer_size")
                 break
 
         # Buffer setup
-        self.buffer = Queue(maxsize=max_buffer_size)
+        self.buffer = Queue(maxsize=self.max_buffer_size)
         self.fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
         self.fetch_thread.start()
-
-        # Logic
-        self.batch_count = -1
-        self.batch_max = -1
-        self.epoch = 0
 
     def _fetch_loop(self):
         while True:
@@ -100,6 +100,7 @@ class TensorConsumer:
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
                         bytes(str(self.batch_max).encode("utf-8")),
+                        b"0",
                     ]
                 )
 
@@ -109,14 +110,14 @@ class TensorConsumer:
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
                         bytes(str(self.batch_max).encode("utf-8")),
+                        b"0",
                     ]
                 )
 
             else:
                 t = self.unpack_fn(cuda_tensor_info["data"])
                 # print(
-                #     cuda_tensor_info["current_batch_index"],
-                #     t[1][:5],
+                #     f"received-{cuda_tensor_info['current_batch_index']}-{self.buffer.qsize()}-{t[1][0]}"
                 # )
                 self.buffer.put(cuda_tensor_info)
                 self.batch_max = cuda_tensor_info["current_batch_index"]
@@ -124,6 +125,7 @@ class TensorConsumer:
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
                         bytes(str(self.batch_max).encode("utf-8")),
+                        b"1",
                     ]
                 )
 
@@ -149,9 +151,9 @@ class TensorConsumer:
                 self.epoch = current_epoch
                 self.batch_count = 0
 
-            if batch_idx == self.batch_count + 1:
+            if batch_idx == self.batch_count:
                 logger.info(
                     f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
                 )
                 self.batch_count += 1
-                return batch
+                return batch_idx, batch

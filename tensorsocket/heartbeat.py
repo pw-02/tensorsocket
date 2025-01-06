@@ -36,6 +36,8 @@ class HeartBeater:
         self.caller = ioloop.PeriodicCallback(self.beat, period)
         self.caller.start()
 
+        self.heart_progress = dict()
+
     def beat(self):
         toc = time.monotonic()
         self.lifetime += toc - self.tic
@@ -59,8 +61,9 @@ class HeartBeater:
         self.hearts.remove(heart)
 
     def handle_pong(self, msg):
-        if float(msg[1]) == self.lifetime:
+        if float(msg[2]) == self.lifetime:
             self.responses.add(msg[0])
+            self.heart_progress[msg[0]] = msg[1]
         else:
             pass
 
@@ -73,6 +76,7 @@ class Heart(Thread):
 
     def __init__(
         self,
+        consumer=None,  # TODO: change
         uuid="default",
         port_in="tcp://localhost:10112",
         port_out="tcp://localhost:10113",
@@ -83,6 +87,8 @@ class Heart(Thread):
         self._uuid = uuid if isinstance(uuid, bytes) else str(uuid).encode("utf-8")
         self._port_in = port_in
         self._port_out = port_out
+
+        self.consumer = consumer
 
     def run(self):
         self._ctx = zmq.Context()
@@ -100,6 +106,9 @@ class Heart(Thread):
                     pass  # Failed
                 else:
                     item = self._in.recv_multipart()  # flags=zmq.NOBLOCK)
-                    self._out.send_multipart([self._uuid] + item)
+                    self._out.send_multipart(
+                        [self._uuid, self.consumer.batch_count.to_bytes(2, "big")]
+                        + item
+                    )
             except zmq.ZMQError:
                 time.sleep(0.01)  # Wait a little for next item to arrive
