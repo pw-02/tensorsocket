@@ -10,9 +10,11 @@ from zmq.eventloop import zmqstream
 
 
 class HeartBeater:
-    """A basic HeartBeater class
-    pingstream: a PUB stream
-    pongstream: an ROUTER stream"""
+    """Monitors consumer health through periodic heartbeat messages.
+
+    Manages pub/sub streams for heartbeat signals and tracks connected consumers.
+    Detects disconnections and new connections through periodic checks.
+    """
 
     def __init__(
         self,
@@ -20,7 +22,15 @@ class HeartBeater:
         pingstream: zmqstream.ZMQStream,
         pongstream: zmqstream.ZMQStream,
         period: int = 500,
-    ):
+    ) -> None:
+        """Initialize heartbeat monitor.
+
+        Args:
+            loop: Tornado IO loop for async operations
+            pingstream: ZMQ stream for sending heartbeats
+            pongstream: ZMQ stream for receiving responses
+            period: Milliseconds between heartbeats
+        """
         self.loop = loop
         self.period = period
 
@@ -38,7 +48,14 @@ class HeartBeater:
 
         self.heart_progress = dict()
 
-    def beat(self):
+    def beat(self) -> None:
+        """Send heartbeat and process responses.
+
+        Checks for:
+        - New consumers that have connected
+        - Existing consumers that failed to respond
+        - Updates tracking sets accordingly
+        """
         toc = time.monotonic()
         self.lifetime += toc - self.tic
         self.tic = toc
@@ -54,13 +71,28 @@ class HeartBeater:
         self.responses = set()
         self.pingstream.send(str(self.lifetime).encode("utf-8"))
 
-    def handle_new_heart(self, heart):
+    def handle_new_heart(self, heart: bytes) -> None:
+        """Register new consumer connection.
+
+        Args:
+            heart: Consumer identifier
+        """
         self.hearts.add(heart)
 
-    def handle_heart_failure(self, heart):
+    def handle_heart_failure(self, heart: bytes) -> None:
+        """Remove failed consumer connection.
+
+        Args:
+            heart: Consumer identifier
+        """
         self.hearts.remove(heart)
 
-    def handle_pong(self, msg):
+    def handle_pong(self, msg: list) -> None:
+        """Process heartbeat response from consumer.
+
+        Args:
+            msg: [consumer_id, progress, lifetime] message
+        """
         if float(msg[2]) == self.lifetime:
             self.responses.add(msg[0])
             self.heart_progress[msg[0]] = msg[1]
@@ -73,16 +105,29 @@ class HeartBeater:
 
 
 class Heart(Thread):
+    """Consumer-side heartbeat sender.
+
+    Runs in separate thread to maintain connection with HeartBeater.
+    Sends periodic updates including processing progress.
+    """
 
     def __init__(
         self,
-        consumer=None,  # TODO: change
+        consumer=None,
         uuid="default",
         port_in="tcp://localhost:10112",
         port_out="tcp://localhost:10113",
         *args,
         **kwargs,
-    ):
+    ) -> None:
+        """Initialize heartbeat sender.
+
+        Args:
+            consumer: Associated consumer instance
+            uuid: Unique identifier for this consumer
+            port_in: Port for receiving heartbeats
+            port_out: Port for sending responses
+        """
         super(Heart, self).__init__(*args, **kwargs)
         self._uuid = uuid if isinstance(uuid, bytes) else str(uuid).encode("utf-8")
         self._port_in = port_in
@@ -90,7 +135,14 @@ class Heart(Thread):
 
         self.consumer = consumer
 
-    def run(self):
+    def run(self) -> None:
+        """Main heartbeat loop.
+
+        Continuously:
+        1. Listens for heartbeat pings
+        2. Responds with current progress
+        3. Handles connection issues
+        """
         self._ctx = zmq.Context()
         self._in = self._ctx.socket(zmq.SUB)
         self._in.connect(self._port_in)

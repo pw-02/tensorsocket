@@ -25,7 +25,6 @@ class DummyLoader:
 
         self.id += 1
         return a, b
-        # return torch.rand((100, 200, 10)), torch.rand((10,))
 
 
 data_loader = DummyLoader()
@@ -37,6 +36,5 @@ for epoch in range(10):
     for i, _ in enumerate(producer):
         if not i % 100:
             pass
-            # print(f"I:{i:0>7}", producer.consumers, producer.hb.consumers)
 producer.join()
 print("finished")

@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from torch import Tensor, cuda
 from tornado import ioloop
+from typing import Any, Iterator, Optional
 from zmq.eventloop import zmqstream
 
 from .heartbeat import HeartBeater
@@ -19,35 +20,74 @@ LOCALHOST = "tcp://*"
 
 @dataclass
 class ConsumerProgress:
-    "Class for keeping track of consumers"
+    """Tracks progress of individual consumers through dataset.
 
-    id_queue: deque
-    payload_queue: deque
+    Maintains ordered queues for batch IDs and payloads to ensure sequential processing
+    and proper synchronization between producer and consumer.
 
-    def add_batch(self, id, payload):
-        "Add an ID/payload pair to the progress counter. ID must be 1 higher than prev."
+    Attributes:
+        id_queue: Queue storing sequential batch IDs
+        payload_queue: Queue storing corresponding tensor payloads
+    """
 
+    id_queue: deque[int]
+    payload_queue: deque[dict]
+
+    def add_batch(self, id: int, payload: dict) -> None:
+        """Add a new batch to tracking queues.
+
+        Args:
+            id: Sequential batch identifier
+            payload: Associated tensor data and metadata
+
+        Raises:
+            AssertionError: If batch ID is not sequential
+        """
         assert id == self.batch_max
         self.id_queue.append(id)
         self.payload_queue.append(payload)
 
-    def remove_batch(self, id):
-        "Remove the leftmost ID/payload pair. ID must match arg0."
+    def remove_batch(self, id: int) -> None:
+        """Remove the leftmost ID/payload pair. ID must match arg0.
 
+        Args:
+            id: Sequential batch identifier
+
+        Raises:
+            AssertionError: If batch ID does not match the leftmost ID
+        """
         assert id == self.batch_count
         self.id_queue.popleft()
         self.payload_queue.popleft()
 
     @property
-    def batch_count(self):
+    def batch_count(self) -> int:
+        """Get the current batch count.
+
+        Returns:
+            The leftmost batch ID in the queue.
+        """
         return self.id_queue[0]
 
     @property
-    def batch_max(self):
+    def batch_max(self) -> int:
+        """Get the maximum batch ID.
+
+        Returns:
+            The rightmost batch ID in the queue plus one, or 0 if the queue is empty.
+        """
         return self.id_queue[-1] + 1 if self.id_queue else 0
 
 
-def process_tensor(tensor):
+def process_tensor(tensor: Any) -> TensorPayload:
+    """Process single tensor for transmission.
+
+    Args:
+        tensor: PyTorch tensor to process
+
+    Returns:
+        Processed tensor wrapped in TensorPayload
+    """
     if isinstance(tensor, Tensor):
         if cuda.is_available():
             tensor = tensor.to(device="cuda")
@@ -55,30 +95,49 @@ def process_tensor(tensor):
     return tensor
 
 
-def pack(data: tuple):
+def pack(data: tuple) -> tuple:
+    """Pack multiple tensors for transmission.
+
+    Args:
+        data: Tuple of tensors to process
+
+    Returns:
+        Tuple of processed tensors
+    """
     return tuple((process_tensor(t) for t in data))
 
 
 class TensorProducer:
+    """Distributes tensor batches to multiple training processes over ZMQ.
+
+    Handles:
+    - Dataset iteration and batch distribution
+    - Consumer health monitoring via heartbeat
+    - Acknowledgement tracking
+    - Rubberbanding for consumer synchronization
+    - Automatic cleanup of disconnected consumers
+    """
+
     def __init__(
         self,
-        data_loader: object,
+        data_loader: Iterator,
         port: int = 5555,
         ack_port: int = 5556,
-        heart_ports: (int, int) = (4444, 4445),
-        rubber_band_pct: int = 0.02,
-        pack_fn=pack,
-        consumer_max_buffer_size=10,
-    ):
-        """
-        Data loader that sends inputs and labels over tcp to training processes (consumers).
+        heart_ports: tuple[int, int] = (4444, 4445),
+        rubber_band_pct: float = 0.02,
+        pack_fn: callable = pack,
+        consumer_max_buffer_size: int = 10,
+    ) -> None:
+        """Initialize producer with configuration.
 
         Args:
-            data_loader (object): Data loader to wrap around. Should be iterable.
-            port (int, optional): Data transmission port. Defaults to 5555.
-            ack_port (int, optional): Acknowledgement port. Defaults to 5556.
-            heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
-            rubber_band_pct (int, optional): Maximum allowed distance between consumers, in percent of training dataset size. Defaults to 0.02.
+            data_loader: Source of tensor batches
+            port: Main data transmission port
+            ack_port: Consumer acknowledgement port
+            heart_ports: (Pub, Sub) ports for heartbeat monitoring
+            rubber_band_pct: Max allowed consumer lag as % of dataset
+            pack_fn: Function to prepare tensors for transmission
+            consumer_max_buffer_size: Max queued batches per consumer
         """
         self.port = port
         self.ack_port = ack_port
@@ -135,7 +194,12 @@ class TensorProducer:
 
         self.active_payloads = []
 
-    def _start_heartbeat(self):
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat monitoring system.
+
+        Sets up ZMQ pub/sub socket pair for tracking consumer connections
+        and initializes event loop for async heartbeat processing.
+        """
         self.loop = ioloop.IOLoop()
         context = zmq.Context()
         pub = context.socket(zmq.PUB)
@@ -150,26 +214,58 @@ class TensorProducer:
         self.hb = HeartBeater(self.loop, outstream, instream)
         self.loop.start()
 
-    def _heartbeat_monitor(self):
+    def _heartbeat_monitor(self) -> None:
+        """Monitor heartbeat in background thread.
+
+        Runs continuously until producer shutdown, checking consumer health.
+        """
         while True:
             if not self._heartbeat_monitor_alive:
                 break
             time.sleep(1)
 
-    def join(self):
+    def join(self) -> None:
+        """Clean shutdown of producer threads and event loops.
+
+        Stops heartbeat monitoring and joins all background threads.
+        """
         self.loop.stop()
         self.heartbeat_thread.join()
         self._heartbeat_monitor_alive = False
         self.heartbeat_monitor_thread.join()
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator:
+        """Return an iterator for the data loader.
+
+        Returns:
+            An iterator for the data loader.
+        """
         self.data_loader_iter = iter(self.data_loader)
         return self
 
-    def __next__(self):
+    def __next__(self) -> tuple:
+        """Get the next sample from the data loader.
+
+        Returns:
+            The next sample from the data loader.
+        """
         return self.get_sample()
 
-    def get_sample(self):
+    def get_sample(self) -> Optional[tuple]:
+        """Core batch distribution method.
+
+        Handles:
+        1. Dead consumer cleanup
+        2. Epoch boundaries and dataset reset
+        3. Consumer synchronization via rubberbanding
+        4. Batch transmission and acknowledgement processing
+
+        Returns:
+            Tensor batch or None if no active consumers
+
+        Raises:
+            StopIteration: At end of epoch
+        """
         # clean up dead consumers
         for consumer in list(self.consumers.keys()):
             if consumer not in self.hb.consumers:
@@ -241,12 +337,20 @@ class TensorProducer:
             raise StopIteration
 
     def _broadcast(
-        self,
-        current_epoch: int,
-        current_batch_index: int,
-        data: tuple,
-    ):
+        self, current_epoch: int, current_batch_index: int, data: tuple
+    ) -> dict:
+        """Broadcast tensor batch to all connected consumers.
 
+        Args:
+            current_epoch: Training epoch number
+            current_batch_index: Current batch index in epoch
+            data: Tensor batch to transmit
+
+        Returns:
+            Dict containing packed tensors and metadata
+
+        Logs progress every 100 batches.
+        """
         payload = dict(
             data=self.pack_fn(data),
             current_epoch=current_epoch,
@@ -265,11 +369,18 @@ class TensorProducer:
         return payload
 
     def _handle_acks(
-        self,
-        expected: list,
-        current_batch_index: int,
-        payload: dict,
-    ):
+        self, expected: list, current_batch_index: int, payload: dict
+    ) -> None:
+        """Process acknowledgements from consumers.
+
+        Args:
+            expected: List of consumer IDs to wait for
+            current_batch_index: Index of batch being acknowledged
+            payload: Transmitted data payload
+
+        Times out after 10 seconds if consumers unresponsive.
+        Maintains synchronization by tracking accepted batches.
+        """
         while True:
             # received all Acks, can go to next batch
             if not len(expected):
@@ -312,10 +423,21 @@ class TensorProducer:
                 )
                 expected = {}
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Get the length of the data loader.
+
+        Returns:
+            The number of batches in the data loader.
+        """
         return self.data_loader_len
 
-    def _send_consumer_len(self):
+    def _send_consumer_len(self) -> None:
+        """Send dataset metadata to newly connected consumers.
+
+        Transmits:
+        - Total number of batches in dataset
+        - Maximum allowed buffer size
+        """
         logger.info("Sending data loader length")
         self.socket.send_pyobj(
             {

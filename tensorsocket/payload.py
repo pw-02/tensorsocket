@@ -3,11 +3,18 @@ from torch.multiprocessing.reductions import rebuild_tensor, rebuild_cuda_tensor
 
 
 class TensorPayload:
-    def __init__(self, tensor: Tensor | tuple):
-        """Tensor sharing payload
+    """Handles serialization and transmission of PyTorch tensors.
+
+    Provides mechanisms for both CUDA and CPU tensor transmission over ZMQ sockets
+    by properly handling memory sharing and rebuilding.
+    """
+
+    def __init__(self, tensor: Tensor | tuple) -> None:
+        """Initialize tensor payload for transmission.
 
         Args:
-            tensor (Tensor | tuple): Source tensor or payload
+            tensor: Either a PyTorch tensor to transmit or a tuple containing
+                   serialized tensor data for reconstruction
         """
         if isinstance(tensor, Tensor):
             self.payload = self._from_tensor(tensor)
@@ -25,7 +32,15 @@ class TensorPayload:
                     tensor["cls"], tensor["storage"], tensor["metadata"]
                 )
 
-    def _from_tensor(self, tensor: Tensor) -> tuple:
+    def _from_tensor(self, tensor: Tensor) -> dict:
+        """Convert tensor to transmissible format.
+
+        Args:
+            tensor: PyTorch tensor to convert
+
+        Returns:
+            Dictionary containing tensor metadata and shared memory information
+        """
         # storage = tensor.untyped_storage()
         storage = tensor._typed_storage()
 
@@ -71,12 +86,22 @@ class TensorPayload:
             "metadata": metadata,
         }
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple:
+        """Enable pickle serialization of payload.
+
+        Returns:
+            Tuple containing class and initialization arguments
+        """
         return (
             self.__class__,
             (self.payload,),
         )
 
     @property
-    def tensor(self):
+    def tensor(self) -> Tensor:
+        """Get the reconstructed tensor.
+
+        Returns:
+            Original PyTorch tensor from payload data
+        """
         return self._tensor
