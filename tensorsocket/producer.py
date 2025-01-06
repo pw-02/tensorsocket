@@ -21,20 +21,12 @@ LOCALHOST = "tcp://*"
 class ConsumerProgress:
     "Class for keeping track of consumers"
 
-    # id_queue: deque = field(
-    #     default_factory=lambda: deque(maxlen=10)
-    # )  # TODO: fix max len
-    # payload_queue: deque = field(
-    #     default_factory=lambda: deque(maxlen=10)
-    # )  # TODO: fix max len
-
     id_queue: deque
     payload_queue: deque
 
     def add_batch(self, id, payload):
         "Add an ID/payload pair to the progress counter. ID must be 1 higher than prev."
 
-        # TODO: assert on max?
         assert id == self.batch_max
         self.id_queue.append(id)
         self.payload_queue.append(payload)
