@@ -1,4 +1,5 @@
 import torch
+import time
 
 from tensorsocket.producer import TensorProducer
 
@@ -34,6 +35,7 @@ producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.2)
 
 for epoch in range(10):
     for i, _ in enumerate(producer):
+        time.sleep(0.01)
         if not i % 100:
             pass
 producer.join()
