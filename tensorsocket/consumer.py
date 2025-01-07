@@ -185,7 +185,7 @@ class TensorConsumer:
                 self.batch_count = 0
                 self.batch_max = -1
                 # self.buffer = Queue(maxsize=self.max_buffer_size)
-                print("reset")
+                # print("reset")
                 continue
                 # raise StopIteration
 
