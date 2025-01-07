@@ -10,7 +10,7 @@ Please check out simple_consumer.py for the paired consumer script.
 
 
 class DummyLoader:
-    def __init__(self, length=1000000):
+    def __init__(self, length=100):
         self.length = length
         self.id = 0
 

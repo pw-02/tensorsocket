@@ -60,6 +60,11 @@ class ConsumerProgress:
         self.id_queue.popleft()
         self.payload_queue.popleft()
 
+    def reset(self):
+        """Clear all stored IDs and payloads."""
+        self.id_queue.clear()
+        self.payload_queue.clear()
+
     @property
     def batch_count(self) -> int:
         """Get the current batch count.
@@ -148,8 +153,7 @@ class TensorProducer:
         try:
             self.data_loader_iter = iter(self.data_loader)
         except TypeError:
-            logger.warning("TensorSocket: DataLoader is already iterable")
-            self.data_loader_iter = self.data_loader
+            raise TypeError("TensorSocket: DataLoader is already iterable")
 
         self.pack_fn = pack_fn
 
@@ -272,10 +276,7 @@ class TensorProducer:
                 self.consumers.pop(consumer)
 
         if self.index >= self.data_loader_len:
-            self.index = 0
-            self.epoch += 1
-            self.rb_buffer = []
-            raise StopIteration
+            self._reset_producer()
 
         # idle when no consumers attached
         elif not len(self.hb.consumers):
@@ -290,6 +291,11 @@ class TensorProducer:
         try:
             send_len = False
             expected = [str(x) for x in self.hb.consumers]
+            # print(
+            #     [(x, y.batch_max) for x, y in self.consumers.items()],
+            #     len(self.rb_buffer),
+            #     self.index,
+            # )
 
             for consumer in expected:
                 if str(consumer) not in self.consumers:
@@ -333,8 +339,16 @@ class TensorProducer:
             self._handle_acks(expected, current_batch_index, payload)
 
         except StopIteration:
-            self.socket.send_pyobj({"stop_iteration": 1})  # TODO: fix
-            raise StopIteration
+            self._reset_producer()
+
+    def _reset_producer(self):
+        self.data_loader_iter = iter(self.data_loader)
+        self.index = 0
+        self.epoch += 1
+        self.rb_buffer = []
+        self.socket.send_pyobj({"stop_iteration": self.epoch})  # TODO: fix
+        # self.socket.send_pyobj({"stop_iteration": 1})  # TODO: fix
+        raise StopIteration
 
     def _broadcast(
         self, current_epoch: int, current_batch_index: int, data: tuple
@@ -413,7 +427,12 @@ class TensorProducer:
                     # batch_max == self.consumers[consumer_index].batch_max
                 ):  #  TODO: missing safeguard
                     print(consumer_index, batch_max)
-                    self.consumers[consumer_index].add_batch(batch_max, payload)
+                    if batch_max + 1 == self.data_loader_len:
+                        # self.consumers.pop(consumer_index)
+                        self.consumers[consumer_index].reset()
+                        # print("reset!")
+                    else:
+                        self.consumers[consumer_index].add_batch(batch_max, payload)
 
             else:
                 logger.info(

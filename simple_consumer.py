@@ -13,11 +13,10 @@ for i, batch in enumerate(consumer):
     b, (inputs, labels) = batch
     if labels != None:
         if True:
-            print(f"I:{i:0>7} -", b, labels[0])
-            time.sleep(0.1)
+            print(f"I:{i:0>7} -", b, labels[0], consumer.epoch)
+            # time.sleep(0.1)
             pass
     else:
         print("Waiting ...")
-    time.sleep(0.05)
 
 print("Finished")

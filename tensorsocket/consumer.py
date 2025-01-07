@@ -79,6 +79,7 @@ class TensorConsumer:
         self.batch_count = 0
         self.batch_max = -1
         self.epoch = 0
+        # self.receiving_epoch = 0
 
         # Heartbeat
         self.heart = Heart(
@@ -114,12 +115,14 @@ class TensorConsumer:
         """
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
+            # print(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
-                pass
+                continue
 
-            elif "stop_iteration" in cuda_tensor_info:
+            if "stop_iteration" in cuda_tensor_info:
                 self.buffer.put(cuda_tensor_info)
+                continue
 
             # ignore and bounce back as others are banding
             elif cuda_tensor_info["current_batch_index"] < self.batch_max + 1:
@@ -176,17 +179,24 @@ class TensorConsumer:
         while True:
             payload = self.buffer.get()  # This will block if buffer is empty
 
-            if payload.get("stop_iteration"):
-                raise StopIteration
+            # if payload.get("stop_iteration"):
+            if "stop_iteration" in payload:
+                self.epoch += 1  # payload["stop_iteration"] TODO: do it like implemented rn to make epochs client-side
+                self.batch_count = 0
+                self.batch_max = -1
+                # self.buffer = Queue(maxsize=self.max_buffer_size)
+                print("reset")
+                continue
+                # raise StopIteration
 
             current_epoch = payload["current_epoch"]
             batch_idx = payload["current_batch_index"]
 
             batch = self.unpack_fn(payload["data"])
 
-            if current_epoch != self.epoch:  # TODO: make epoch count flexible
-                self.epoch = current_epoch
-                self.batch_count = 0
+            # if current_epoch != self.epoch:  # TODO: make epoch count flexible
+            #     self.epoch = current_epoch
+            #     self.batch_count = 0
 
             if batch_idx == self.batch_count:
                 logger.info(
