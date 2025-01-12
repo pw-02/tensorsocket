@@ -124,38 +124,54 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
-            # ignore and bounce back as others are banding
-            elif cuda_tensor_info["current_batch_index"] < self.batch_max + 1:
-                self.ack_socket.send_multipart(
-                    [
-                        bytes(str(self.consumer_id).encode("utf-8")),
-                        bytes(str(self.batch_max).encode("utf-8")),
-                        b"0",
-                    ]
-                )
+            messages = cuda_tensor_info["-1"]
 
-            # dont accept batch if it is from the future
-            elif cuda_tensor_info["current_batch_index"] > self.batch_max + 1:
-                self.ack_socket.send_multipart(
-                    [
-                        bytes(str(self.consumer_id).encode("utf-8")),
-                        bytes(str(self.batch_max).encode("utf-8")),
-                        b"0",
-                    ]
-                )
+            received_new = False
 
-            else:
-                t = self.unpack_fn(cuda_tensor_info["data"])
-                # print(
-                #     f"received-{cuda_tensor_info['current_batch_index']}-{self.buffer.qsize()}-{t[1][0]}"
-                # )
-                self.buffer.put(cuda_tensor_info)
-                self.batch_max = cuda_tensor_info["current_batch_index"]
+            # # ignore and bounce back as others are banding
+            # if messages[0]["current_batch_index"] < self.batch_max + 1:
+            #     self.ack_socket.send_multipart(
+            #         [
+            #             bytes(str(self.consumer_id).encode("utf-8")),
+            #             bytes(str(self.batch_max).encode("utf-8")),
+            #             b"0",
+            #         ]
+            #     )
+
+            # # dont accept batch if it is from the future
+            # elif messages[0]["current_batch_index"] > self.batch_max + 1:
+            #     self.ack_socket.send_multipart(
+            #         [
+            #             bytes(str(self.consumer_id).encode("utf-8")),
+            #             bytes(str(self.batch_max).encode("utf-8")),
+            #             b"0",
+            #         ]
+            #     )
+
+            for message in messages:
+                if message["current_batch_index"] == self.batch_max + 1:
+                    # t = self.unpack_fn(payload["data"])
+                    # print(
+                    #     f"received-{cuda_tensor_info['current_batch_index']}-{self.buffer.qsize()}-{t[1][0]}"
+                    # )
+                    self.buffer.put(message)
+                    self.batch_max = message["current_batch_index"]
+                    received_new = True
+
+            if received_new:
                 self.ack_socket.send_multipart(
                     [
                         bytes(str(self.consumer_id).encode("utf-8")),
                         bytes(str(self.batch_max).encode("utf-8")),
                         b"1",
+                    ]
+                )
+            else:
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(str(self.batch_max).encode("utf-8")),
+                        b"0",
                     ]
                 )
 

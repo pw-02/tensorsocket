@@ -365,11 +365,16 @@ class TensorProducer:
 
         Logs progress every 100 batches.
         """
-        payload = dict(
-            data=self.pack_fn(data),
-            current_epoch=current_epoch,
-            current_batch_index=current_batch_index,
-        )
+
+        messages = [
+            dict(
+                data=self.pack_fn(data),
+                current_epoch=current_epoch,
+                current_batch_index=current_batch_index,
+            )
+        ]
+
+        payload = {"-1": messages}
 
         # self.active_payloads.append(payload)
 
