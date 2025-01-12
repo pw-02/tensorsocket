@@ -112,6 +112,12 @@ def pack(data: tuple) -> tuple:
     return tuple((process_tensor(t) for t in data))
 
 
+def slice(data: tuple, a: int, b: int) -> tuple:
+    """Slice multiple tensors"""
+
+    return tuple((element[a:b] for element in data))
+
+
 class TensorProducer:
     """Distributes tensor batches to multiple training processes over ZMQ.
 
@@ -366,6 +372,21 @@ class TensorProducer:
         Logs progress every 100 batches.
         """
 
+        # for bs in [8]:
+        #     # TODO: merge multiple batches
+        #     for i, offset in enumerate(range(0, len(data[0]), bs)):
+        #         messages = [
+        #             dict(
+        #                 data=self.pack_fn(slice(data, offset, offset + bs)),
+        #                 current_epoch=current_epoch,
+        #                 current_batch_index=current_batch_index * (len(data[0]) // bs)
+        #                 + i,
+        #             )
+        #         ]
+        #         print(slice(data, offset, offset + bs)[0].shape, len(data[0]))
+
+        #         payload = {f"{bs}": messages}
+
         messages = [
             dict(
                 data=self.pack_fn(data),
@@ -373,10 +394,12 @@ class TensorProducer:
                 current_batch_index=current_batch_index,
             )
         ]
+        print(data[0].shape)
 
         payload = {"-1": messages}
 
         # self.active_payloads.append(payload)
+        print(payload)
 
         if current_batch_index % 100 == 0:
             logger.info(

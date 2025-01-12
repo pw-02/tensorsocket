@@ -46,6 +46,7 @@ class TensorConsumer:
 
     def __init__(
         self,
+        batch_size: int = 8,
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
@@ -60,6 +61,7 @@ class TensorConsumer:
             unpack_fn: Function to reconstruct tensors
         """
         self.unpack_fn = unpack_fn
+        self.batch_size = batch_size
 
         self.port = port
         self.ack_port = ack_port
@@ -115,7 +117,7 @@ class TensorConsumer:
         """
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
-            # print(cuda_tensor_info)
+            print(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
                 continue
@@ -124,6 +126,7 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
+            # messages = cuda_tensor_info[f"{self.batch_size}"]
             messages = cuda_tensor_info["-1"]
 
             received_new = False
