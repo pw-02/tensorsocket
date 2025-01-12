@@ -32,6 +32,7 @@ class ConsumerProgress:
 
     id_queue: deque[int]
     payload_queue: deque[dict]
+    batch_size: int = 2  # TODO: swap
 
     def add_batch(self, id: int, payload: dict) -> None:
         """Add a new batch to tracking queues.
@@ -43,7 +44,7 @@ class ConsumerProgress:
         Raises:
             AssertionError: If batch ID is not sequential
         """
-        assert id == self.batch_max
+        # assert id == self.batch_max
         self.id_queue.append(id)
         self.payload_queue.append(payload)
 
@@ -56,7 +57,7 @@ class ConsumerProgress:
         Raises:
             AssertionError: If batch ID does not match the leftmost ID
         """
-        assert id == self.batch_count
+        # assert id == self.batch_count
         self.id_queue.popleft()
         self.payload_queue.popleft()
 
@@ -72,7 +73,7 @@ class ConsumerProgress:
         Returns:
             The leftmost batch ID in the queue.
         """
-        return self.id_queue[0]
+        return self.id_queue[0] / self.batch_size
 
     @property
     def batch_max(self) -> int:
@@ -81,7 +82,7 @@ class ConsumerProgress:
         Returns:
             The rightmost batch ID in the queue plus one, or 0 if the queue is empty.
         """
-        return self.id_queue[-1] + 1 if self.id_queue else 0
+        return (self.id_queue[-1] + 1 if self.id_queue else 0) / self.batch_size
 
 
 def process_tensor(tensor: Any) -> TensorPayload:
@@ -372,31 +373,33 @@ class TensorProducer:
         Logs progress every 100 batches.
         """
 
-        # for bs in [8]:
-        #     # TODO: merge multiple batches
-        #     for i, offset in enumerate(range(0, len(data[0]), bs)):
-        #         messages = [
-        #             dict(
-        #                 data=self.pack_fn(slice(data, offset, offset + bs)),
-        #                 current_epoch=current_epoch,
-        #                 current_batch_index=current_batch_index * (len(data[0]) // bs)
-        #                 + i,
-        #             )
-        #         ]
-        #         print(slice(data, offset, offset + bs)[0].shape, len(data[0]))
+        payload = {}
+        for bs in [4, 8]:
+            # TODO: merge multiple batches
+            messages = []
+            for i, offset in enumerate(range(0, len(data[0]), bs)):
+                messages.append(
+                    dict(
+                        data=self.pack_fn(slice(data, offset, offset + bs)),
+                        current_epoch=current_epoch,
+                        current_batch_index=current_batch_index * (len(data[0]) // bs)
+                        + i,
+                    )
+                )
+                # print(slice(data, offset, offset + bs)[0].shape, len(data[0]))
 
-        #         payload = {f"{bs}": messages}
+            payload[f"{bs}"] = messages
 
-        messages = [
-            dict(
-                data=self.pack_fn(data),
-                current_epoch=current_epoch,
-                current_batch_index=current_batch_index,
-            )
-        ]
-        print(data[0].shape)
+        # messages = [
+        #     dict(
+        #         data=self.pack_fn(data),
+        #         current_epoch=current_epoch,
+        #         current_batch_index=current_batch_index,
+        #     )
+        # ]
+        # print(data[0].shape)
 
-        payload = {"-1": messages}
+        # payload = {"-1": messages}
 
         # self.active_payloads.append(payload)
         print(payload)

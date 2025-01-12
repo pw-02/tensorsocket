@@ -15,8 +15,8 @@ transform = transforms.Compose(
 dataset1 = datasets.MNIST("../data", train=True, download=True, transform=transform)
 dataset2 = datasets.MNIST("../data", train=False, transform=transform)
 
-train_kwargs = {"batch_size": 8}
-test_kwargs = {"batch_size": 8}
+train_kwargs = {"batch_size": 16}
+test_kwargs = {"batch_size": 16}
 
 use_cuda = True
 if use_cuda:

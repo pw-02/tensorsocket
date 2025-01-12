@@ -46,11 +46,11 @@ class TensorConsumer:
 
     def __init__(
         self,
-        batch_size: int = 8,
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
         unpack_fn=unpack,
+        batch_size: int = 8,
     ) -> None:
         """Initialize consumer connection.
 
@@ -126,8 +126,8 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
-            # messages = cuda_tensor_info[f"{self.batch_size}"]
-            messages = cuda_tensor_info["-1"]
+            messages = cuda_tensor_info[f"{self.batch_size}"]
+            # messages = cuda_tensor_info["-1"]
 
             received_new = False
 
