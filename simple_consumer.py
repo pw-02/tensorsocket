@@ -13,7 +13,7 @@ for i, batch in enumerate(consumer):
     b, (inputs, labels) = batch
     if labels != None:
         if True:
-            print(f"I:{i:0>7} -", b, labels[0], consumer.epoch)
+            print(f"I:{i:0>7} -", b, labels[0], consumer.epoch, len(labels))
             # time.sleep(0.1)
             pass
     else:

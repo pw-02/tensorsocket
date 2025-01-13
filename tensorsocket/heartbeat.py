@@ -47,6 +47,7 @@ class HeartBeater:
         self.caller.start()
 
         self.heart_progress = dict()
+        self.heart_batch_size = dict()
 
     def beat(self) -> None:
         """Send heartbeat and process responses.
@@ -93,9 +94,10 @@ class HeartBeater:
         Args:
             msg: [consumer_id, progress, lifetime] message
         """
-        if float(msg[2]) == self.lifetime:
+        if float(msg[3]) == self.lifetime:
             self.responses.add(msg[0])
-            self.heart_progress[msg[0]] = msg[1]
+            self.heart_progress[str(msg[0])] = int.from_bytes(msg[1], "big")
+            self.heart_batch_size[str(msg[0])] = int.from_bytes(msg[2], "big")
         else:
             pass
 
@@ -115,6 +117,7 @@ class Heart(Thread):
         self,
         consumer=None,
         uuid="default",
+        batch_size=0,
         port_in="tcp://localhost:10112",
         port_out="tcp://localhost:10113",
         *args,
@@ -134,6 +137,7 @@ class Heart(Thread):
         self._port_out = port_out
 
         self.consumer = consumer
+        self.batch_size = batch_size
 
     def run(self) -> None:
         """Main heartbeat loop.
@@ -159,7 +163,11 @@ class Heart(Thread):
                 else:
                     item = self._in.recv_multipart()  # flags=zmq.NOBLOCK)
                     self._out.send_multipart(
-                        [self._uuid, self.consumer.batch_count.to_bytes(2, "big")]
+                        [
+                            self._uuid,
+                            self.consumer.batch_count.to_bytes(8, "big"),
+                            self.consumer.batch_size.to_bytes(8, "big"),
+                        ]
                         + item
                     )
             except zmq.ZMQError:

@@ -50,7 +50,7 @@ class TensorConsumer:
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
         unpack_fn=unpack,
-        batch_size: int = 8,
+        batch_size: int = 64,
     ) -> None:
         """Initialize consumer connection.
 
@@ -87,6 +87,7 @@ class TensorConsumer:
         self.heart = Heart(
             self,
             self.consumer_id,
+            self.batch_size,
             f"{LOCALHOST}:{self.heart_ports[0]}",
             f"{LOCALHOST}:{self.heart_ports[1]}",
         )
@@ -117,7 +118,7 @@ class TensorConsumer:
         """
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
-            print(cuda_tensor_info)
+            # print(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
                 continue

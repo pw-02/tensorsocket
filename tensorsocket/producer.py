@@ -4,8 +4,8 @@ import time
 import zmq
 
 from collections import deque
-from dataclasses import dataclass, field
-from torch import Tensor, cuda
+from dataclasses import dataclass
+from torch import Tensor, cuda, cat
 from tornado import ioloop
 from typing import Any, Iterator, Optional
 from zmq.eventloop import zmqstream
@@ -32,7 +32,8 @@ class ConsumerProgress:
 
     id_queue: deque[int]
     payload_queue: deque[dict]
-    batch_size: int = 2  # TODO: swap
+    loader_batch_size: int
+    batch_size: int
 
     def add_batch(self, id: int, payload: dict) -> None:
         """Add a new batch to tracking queues.
@@ -73,7 +74,7 @@ class ConsumerProgress:
         Returns:
             The leftmost batch ID in the queue.
         """
-        return self.id_queue[0] / self.batch_size
+        return self.id_queue[0] * self.batch_size // self.loader_batch_size
 
     @property
     def batch_max(self) -> int:
@@ -82,7 +83,11 @@ class ConsumerProgress:
         Returns:
             The rightmost batch ID in the queue plus one, or 0 if the queue is empty.
         """
-        return (self.id_queue[-1] + 1 if self.id_queue else 0) / self.batch_size
+        return (
+            (self.id_queue[-1] + 1 if self.id_queue else 0)
+            * self.batch_size
+            // self.loader_batch_size
+        )
 
 
 def process_tensor(tensor: Any) -> TensorPayload:
@@ -119,6 +124,12 @@ def slice(data: tuple, a: int, b: int) -> tuple:
     return tuple((element[a:b] for element in data))
 
 
+def collate(batches: list) -> tuple:
+    """Collate multiple tensors"""
+
+    return tuple((cat([batch[i] for batch in batches]) for i in range(len(batches[0]))))
+
+
 class TensorProducer:
     """Distributes tensor batches to multiple training processes over ZMQ.
 
@@ -136,9 +147,11 @@ class TensorProducer:
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
-        rubber_band_pct: float = 0.02,
+        rubber_band_pct: float = 0.2,  # TODO: revert
         pack_fn: callable = pack,
         consumer_max_buffer_size: int = 10,
+        producer_batch_size: int = 8,  # TODO: divide
+        loader_batch_size: int = 8,  # TODO: auto infer
     ) -> None:
         """Initialize producer with configuration.
 
@@ -163,6 +176,8 @@ class TensorProducer:
             raise TypeError("TensorSocket: DataLoader is already iterable")
 
         self.pack_fn = pack_fn
+        self.producer_batch_size = producer_batch_size
+        self.loader_batch_size = loader_batch_size
 
         self.index = 0
         self.context = zmq.Context()
@@ -309,40 +324,74 @@ class TensorProducer:
                     self.consumers[str(consumer)] = ConsumerProgress(
                         deque(maxlen=self.consumer_max_buffer_size + 1),
                         deque(maxlen=self.consumer_max_buffer_size + 1),
+                        self.loader_batch_size,
+                        self.hb.heart_batch_size[str(consumer)],
                     )
                     send_len = True
 
             if send_len:
                 self._send_consumer_len()
 
-            # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
-            if (
-                (self.rb_buffer)
-                and (
-                    (min_batch := min([x.batch_max for x in self.consumers.values()]))
-                    < current_batch_index
-                )
-                and (current_batch_index < self.rb_max_len)
-            ):
-                current_batch_index, data = self.rb_buffer[min_batch]
+            if self.rb_buffer:
+                if (
+                    min_batch := min([x.batch_max for x in self.consumers.values()])
+                ) not in [x[0] for x in self.rb_buffer]:
+                    current_batch_index, buffer_index = -1, -1
+                else:
+                    buffer_index = [x[0] for x in self.rb_buffer].index(min_batch)
+                    current_batch_index, _ = self.rb_buffer[buffer_index]
             else:
-                data = next(self.data_loader_iter)
+                current_batch_index, buffer_index = 0, 0
 
+            batch_length = len(self.rb_buffer[buffer_index:])
+
+            print(
+                self.index,
+                current_batch_index,
+                buffer_index,
+                batch_length,
+                min([x.batch_max for x in self.consumers.values()]),
+            )
+
+            if batch_length < self.producer_batch_size:
                 # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
-                self.rb_buffer.append((current_batch_index, data))
+                self.rb_buffer.append((self.index, next(self.data_loader_iter)))
 
                 # if buffer full, pop from end
                 if len(self.rb_buffer) > self.rb_max_len:
-                    _ = self.rb_buffer.pop(-1)
+                    _ = self.rb_buffer.pop(0)
 
                 self.index += 1
+                return
 
-                # current_batch_index, data = self.rb_buffer[
-                #     min([c.batch_max for c in self.consumers.values()])
-                # ]  # TODO: fix when rband is full?
+            # # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
+            # if (
+            #     (self.rb_buffer)
+            #     and (
+            #         (min_batch := min([x.batch_max for x in self.consumers.values()]))
+            #         < current_batch_index
+            #     )
+            #     and (current_batch_index < self.rb_max_len)
+            # ):
+            #     current_batch_index, data = self.rb_buffer[min_batch]
+            # else:
+            #     data = next(self.data_loader_iter)
+
+            #     # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
+            #     self.rb_buffer.append((current_batch_index, data))
+
+            #     # if buffer full, pop from end
+            #     if len(self.rb_buffer) > self.rb_max_len:
+            #         _ = self.rb_buffer.pop(-1)
+
+            #     self.index += 1
+
+            #     # current_batch_index, data = self.rb_buffer[
+            #     #     min([c.batch_max for c in self.consumers.values()])
+            #     # ]  # TODO: fix when rband is full?
 
             expected = [x for x in expected]
-            payload = self._broadcast(self.epoch, current_batch_index, data)
+            payload = self._broadcast(self.epoch, current_batch_index, buffer_index)
             self._handle_acks(expected, current_batch_index, payload)
 
         except StopIteration:
@@ -358,7 +407,7 @@ class TensorProducer:
         raise StopIteration
 
     def _broadcast(
-        self, current_epoch: int, current_batch_index: int, data: tuple
+        self, current_epoch: int, current_batch_index: int, buffer_index: int
     ) -> dict:
         """Broadcast tensor batch to all connected consumers.
 
@@ -373,16 +422,28 @@ class TensorProducer:
         Logs progress every 100 batches.
         """
 
+        data = collate(
+            [
+                x[1]
+                for x in self.rb_buffer[
+                    buffer_index : buffer_index + self.producer_batch_size
+                ]
+            ]
+        )
+
         payload = {}
-        for bs in [4, 8]:
-            # TODO: merge multiple batches
+        for bs in (
+            self.consumers[x].batch_size for x in self.consumers
+        ):  # TODO: disconnect from prodbatchsize, at the moment synced
             messages = []
             for i, offset in enumerate(range(0, len(data[0]), bs)):
                 messages.append(
                     dict(
                         data=self.pack_fn(slice(data, offset, offset + bs)),
                         current_epoch=current_epoch,
-                        current_batch_index=current_batch_index * (len(data[0]) // bs)
+                        current_batch_index=current_batch_index
+                        * self.loader_batch_size
+                        // bs
                         + i,
                     )
                 )
@@ -402,7 +463,7 @@ class TensorProducer:
         # payload = {"-1": messages}
 
         # self.active_payloads.append(payload)
-        print(payload)
+        # print(payload)
 
         if current_batch_index % 100 == 0:
             logger.info(
