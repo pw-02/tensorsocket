@@ -93,7 +93,7 @@ class ConsumerProgress:
         )
 
 
-def process_tensor(tensor: Any) -> TensorPayload:
+def process_tensor(tensor: Any, do_cuda: bool) -> TensorPayload:
     """Process single tensor for transmission.
 
     Args:
@@ -103,13 +103,15 @@ def process_tensor(tensor: Any) -> TensorPayload:
         Processed tensor wrapped in TensorPayload
     """
     if isinstance(tensor, Tensor):
-        if cuda.is_available():
-            tensor = tensor.to(device="cuda")
-        tensor = TensorPayload(tensor)
+        if do_cuda:
+            if cuda.is_available():
+                tensor = tensor.to(device="cuda")
+        else:
+            tensor = TensorPayload(tensor)
     return tensor
 
 
-def pack(data: tuple) -> tuple:
+def pack(data: tuple, do_cuda: bool) -> tuple:
     """Pack multiple tensors for transmission.
 
     Args:
@@ -118,7 +120,7 @@ def pack(data: tuple) -> tuple:
     Returns:
         Tuple of processed tensors
     """
-    return tuple((process_tensor(t) for t in data))
+    return tuple((process_tensor(t, do_cuda) for t in data))
 
 
 def slice(data: tuple, a: int, b: int) -> tuple:
@@ -353,6 +355,7 @@ class TensorProducer:
                 buffer_index,
                 batch_length,
                 min([x.batch_max for x in self.consumers.values()]),
+                len(self.rb_buffer),
             )
 
             if batch_length < self.producer_batch_size:
@@ -442,6 +445,8 @@ class TensorProducer:
             ]
         )
 
+        data = self.pack_fn(data, True) # TODO: remove cuda flag
+
         payload = {}
         for bs in (
             self.consumers[x].batch_size for x in self.consumers
@@ -453,7 +458,7 @@ class TensorProducer:
                 print(i, offset, offset + bs)
                 messages.append(
                     dict(
-                        data=self.pack_fn(slice(data, offset, offset + bs)),
+                        data=self.pack_fn(slice(data, offset, offset + bs), False),
                         current_epoch=current_epoch,
                         current_batch_index=current_batch_index
                         * self.loader_batch_size
