@@ -349,14 +349,14 @@ class TensorProducer:
 
             batch_length = len(self.rb_buffer[buffer_index:])
 
-            print(
-                self.index,
-                current_batch_index,
-                buffer_index,
-                batch_length,
-                min([x.batch_max for x in self.consumers.values()]),
-                len(self.rb_buffer),
-            )
+            # print(
+            #     self.index,
+            #     current_batch_index,
+            #     buffer_index,
+            #     batch_length,
+            #     min([x.batch_max for x in self.consumers.values()]),
+            #     len(self.rb_buffer),
+            # )
 
             if batch_length < self.producer_batch_size:
                 # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
@@ -445,25 +445,41 @@ class TensorProducer:
             ]
         )
 
-        data = self.pack_fn(data, True) # TODO: remove cuda flag
+        data = self.pack_fn(data, True)  # TODO: remove cuda flag
 
         payload = {}
-        for bs in (
-            self.consumers[x].batch_size for x in self.consumers
+        for bs, bmax in (
+            (self.consumers[x].batch_size, self.consumers[x].batch_max)
+            for x in self.consumers
         ):  # TODO: disconnect from prodbatchsize, at the moment synced
             messages = []
-            for i, offset in enumerate(range(0, len(data[0]), bs)):
+            if bs == 16:
+                print("bs", bs)
+            # consumer_bs = current_batch_index * self.loader_batch_size // bs
+            for i, offset in enumerate(
+                range(
+                    (bmax - current_batch_index) * self.loader_batch_size,
+                    len(data[0]),
+                    bs,
+                )
+            ):  # TODO: swap with offset of consumer
                 if offset + bs > len(data[0]):
                     break
-                print(i, offset, offset + bs)
+                if bs == 16:
+                    print(
+                        "payload",
+                        bmax - current_batch_index,
+                        i,
+                        offset,
+                        offset + bs,
+                        bmax * self.loader_batch_size / bs + i,
+                        slice(data, offset, offset + bs)[1][0],
+                    )
                 messages.append(
                     dict(
                         data=self.pack_fn(slice(data, offset, offset + bs), False),
                         current_epoch=current_epoch,
-                        current_batch_index=current_batch_index
-                        * self.loader_batch_size
-                        // bs
-                        + i,
+                        current_batch_index=bmax * self.loader_batch_size // bs + i,
                     )
                 )
                 # print(slice(data, offset, offset + bs)[0].shape, len(data[0]))
