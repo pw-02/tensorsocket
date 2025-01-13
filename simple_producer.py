@@ -14,7 +14,7 @@ class DummyLoader:
     def __init__(self, length=10000):
         self.length = length
         self.id = 0
-        self.batch_size = 16
+        self.batch_size = 8
 
     def __len__(self):
         return self.length
@@ -24,7 +24,7 @@ class DummyLoader:
 
     def __next__(self):
         a, b = (
-            self.id * torch.ones((self.batch_size, 100, 200)),
+            self.id * torch.ones((self.batch_size, 1000, 2000)),
             self.id * torch.ones((self.batch_size,)),
         )
 

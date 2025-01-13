@@ -360,6 +360,7 @@ class TensorProducer:
                 self.rb_buffer.append((self.index, next(self.data_loader_iter)))
 
                 # if loader batch size not yet determined, set it
+                # TODO: move to a custom defined function so that it can be overwritten
                 if self.loader_batch_size == 0:
                     self.loader_batch_size = len(self.rb_buffer[-1][1][0])
                     for consumer in self.consumers:
@@ -447,6 +448,9 @@ class TensorProducer:
         ):  # TODO: disconnect from prodbatchsize, at the moment synced
             messages = []
             for i, offset in enumerate(range(0, len(data[0]), bs)):
+                if offset + bs > len(data[0]):
+                    break
+                print(i, offset, offset + bs)
                 messages.append(
                     dict(
                         data=self.pack_fn(slice(data, offset, offset + bs)),

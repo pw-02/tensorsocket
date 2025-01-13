@@ -127,7 +127,13 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
-            messages = cuda_tensor_info[f"{self.batch_size}"]
+            if f"{self.batch_size}" in cuda_tensor_info:  # Flexible
+                messages = cuda_tensor_info[f"{self.batch_size}"]
+            elif "-1" in cuda_tensor_info and len(cuda_tensor_info) == 1:  # Static
+                messages = cuda_tensor_info["-1"]
+            else:  # Ignore
+                messages = []
+
             # messages = cuda_tensor_info["-1"]
 
             received_new = False
