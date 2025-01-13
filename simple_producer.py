@@ -14,7 +14,7 @@ class DummyLoader:
     def __init__(self, length=10000):
         self.length = length
         self.id = 0
-        self.batch_size = 8
+        self.batch_size = 16
 
     def __len__(self):
         return self.length

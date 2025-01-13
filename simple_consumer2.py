@@ -8,7 +8,7 @@ The TensorConsumer class directly replaces the data loader in the training scrip
 Please check out simple_producer.py for the paired producer script.
 """
 
-consumer = TensorConsumer("5556", "5557", batch_size=16)
+consumer = TensorConsumer("5556", "5557", batch_size=40)
 for i, batch in enumerate(consumer):
     b, (inputs, labels) = batch
     if labels != None:

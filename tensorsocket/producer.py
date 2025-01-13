@@ -67,14 +67,14 @@ class ConsumerProgress:
         self.id_queue.clear()
         self.payload_queue.clear()
 
-    @property
-    def batch_count(self) -> int:
-        """Get the current batch count.
+    # @property
+    # def batch_count(self) -> int:
+    #     """Get the current batch count.
 
-        Returns:
-            The leftmost batch ID in the queue.
-        """
-        return self.id_queue[0] * self.batch_size // self.loader_batch_size
+    #     Returns:
+    #         The leftmost batch ID in the queue.
+    #     """
+    #     return self.id_queue[0] * self.batch_size // self.loader_batch_size
 
     @property
     def batch_max(self) -> int:
@@ -83,6 +83,9 @@ class ConsumerProgress:
         Returns:
             The rightmost batch ID in the queue plus one, or 0 if the queue is empty.
         """
+        if self.loader_batch_size == 0:
+            return 0
+
         return (
             (self.id_queue[-1] + 1 if self.id_queue else 0)
             * self.batch_size
@@ -151,7 +154,6 @@ class TensorProducer:
         pack_fn: callable = pack,
         consumer_max_buffer_size: int = 10,
         producer_batch_size: int = 8,  # TODO: divide
-        loader_batch_size: int = 8,  # TODO: auto infer
     ) -> None:
         """Initialize producer with configuration.
 
@@ -177,7 +179,7 @@ class TensorProducer:
 
         self.pack_fn = pack_fn
         self.producer_batch_size = producer_batch_size
-        self.loader_batch_size = loader_batch_size
+        self.loader_batch_size = 0
 
         self.index = 0
         self.context = zmq.Context()
@@ -356,6 +358,14 @@ class TensorProducer:
             if batch_length < self.producer_batch_size:
                 # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
                 self.rb_buffer.append((self.index, next(self.data_loader_iter)))
+
+                # if loader batch size not yet determined, set it
+                if self.loader_batch_size == 0:
+                    self.loader_batch_size = len(self.rb_buffer[-1][1][0])
+                    for consumer in self.consumers:
+                        self.consumers[consumer].loader_batch_size = (
+                            self.loader_batch_size
+                        )
 
                 # if buffer full, pop from end
                 if len(self.rb_buffer) > self.rb_max_len:
