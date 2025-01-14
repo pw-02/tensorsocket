@@ -376,6 +376,7 @@ class TensorProducer:
                     _ = self.rb_buffer.pop(0)
 
                 self.index += 1
+
                 return
 
             # # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
@@ -452,9 +453,10 @@ class TensorProducer:
             (self.consumers[x].batch_size, self.consumers[x].batch_max)
             for x in self.consumers
         ):  # TODO: disconnect from prodbatchsize, at the moment synced
+            # TODO: do this *per consumer*
             messages = []
-            if bs == 16:
-                print("bs", bs)
+            # if bs == 16:
+            #     print("bs", bs)
             # consumer_bs = current_batch_index * self.loader_batch_size // bs
             for i, offset in enumerate(
                 range(
@@ -465,16 +467,16 @@ class TensorProducer:
             ):  # TODO: swap with offset of consumer
                 if offset + bs > len(data[0]):
                     break
-                if bs == 16:
-                    print(
-                        "payload",
-                        bmax - current_batch_index,
-                        i,
-                        offset,
-                        offset + bs,
-                        bmax * self.loader_batch_size / bs + i,
-                        slice(data, offset, offset + bs)[1][0],
-                    )
+                # if bs == 16:
+                #     print(
+                #         "payload",
+                #         bmax - current_batch_index,
+                #         i,
+                #         offset,
+                #         offset + bs,
+                #         bmax * self.loader_batch_size / bs + i,
+                #         slice(data, offset, offset + bs)[1][0],
+                #     )
                 messages.append(
                     dict(
                         data=self.pack_fn(slice(data, offset, offset + bs), False),

@@ -26,7 +26,7 @@ if use_cuda:
 train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
 test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
-producer = TensorProducer(test_loader, "5556", "5557", rubber_band_pct=0.2)
+producer = TensorProducer(train_loader, "5556", "5557", rubber_band_pct=0.2)
 
 for epoch in range(10):
     for i, _ in enumerate(producer):
