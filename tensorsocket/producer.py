@@ -401,15 +401,6 @@ class TensorProducer:
 
             batch_length = len(self.rb_buffer[buffer_index:])
 
-            # print(
-            #     self.index,
-            #     current_batch_index,
-            #     buffer_index,
-            #     batch_length,
-            #     min([x.batch_max for x in self.consumers.values()]),
-            #     len(self.rb_buffer),
-            # )
-
             if batch_length < self.producer_batch_size:
                 # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
                 self.rb_buffer.append((self.index, next(self.data_loader_iter)))
@@ -430,32 +421,6 @@ class TensorProducer:
                 self.index += 1
 
                 return
-
-            # # # if we are relatively early in the epoch, allow for new proc to catch up (rubberbanding)
-            # if (
-            #     (self.rb_buffer)
-            #     and (
-            #         (min_batch := min([x.batch_max for x in self.consumers.values()]))
-            #         < current_batch_index
-            #     )
-            #     and (current_batch_index < self.rb_max_len)
-            # ):
-            #     current_batch_index, data = self.rb_buffer[min_batch]
-            # else:
-            #     data = next(self.data_loader_iter)
-
-            #     # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
-            #     self.rb_buffer.append((current_batch_index, data))
-
-            #     # if buffer full, pop from end
-            #     if len(self.rb_buffer) > self.rb_max_len:
-            #         _ = self.rb_buffer.pop(-1)
-
-            #     self.index += 1
-
-            #     # current_batch_index, data = self.rb_buffer[
-            #     #     min([c.batch_max for c in self.consumers.values()])
-            #     # ]  # TODO: fix when rband is full?
 
             expected = [x for x in expected]
             payload = self._broadcast(self.epoch, current_batch_index, buffer_index)
@@ -507,9 +472,7 @@ class TensorProducer:
         ):  # TODO: disconnect from prodbatchsize, at the moment synced
             # TODO: do this *per consumer*
             messages = []
-            # if bs == 16:
-            #     print("bs", bs)
-            # consumer_bs = current_batch_index * self.loader_batch_size // bs
+
             for i, offset in enumerate(
                 range(
                     (bmax - current_batch_index) * self.loader_batch_size,
@@ -519,16 +482,7 @@ class TensorProducer:
             ):  # TODO: swap with offset of consumer
                 if offset + bs > len(data[0]):
                     break
-                # if bs == 16:
-                #     print(
-                #         "payload",
-                #         bmax - current_batch_index,
-                #         i,
-                #         offset,
-                #         offset + bs,
-                #         bmax * self.loader_batch_size / bs + i,
-                #         slice(data, offset, offset + bs)[1][0],
-                #     )
+
                 messages.append(
                     dict(
                         data=self.pack_fn(slice(data, offset, offset + bs)),
@@ -536,23 +490,8 @@ class TensorProducer:
                         current_batch_index=bmax * self.loader_batch_size // bs + i,
                     )
                 )
-                # print(slice(data, offset, offset + bs)[0].shape, len(data[0]))
 
             payload[f"{bs}"] = messages
-
-        # messages = [
-        #     dict(
-        #         data=self.pack_fn(data),
-        #         current_epoch=current_epoch,
-        #         current_batch_index=current_batch_index,
-        #     )
-        # ]
-        # print(data[0].shape)
-
-        # payload = {"-1": messages}
-
-        # self.active_payloads.append(payload)
-        # print(payload)
 
         if current_batch_index % 100 == 0:
             logger.info(

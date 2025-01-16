@@ -215,14 +215,9 @@ class TensorConsumer:
                 continue
                 # raise StopIteration
 
-            current_epoch = payload["current_epoch"]
             batch_idx = payload["current_batch_index"]
 
             batch = self.unpack_fn(payload["data"])
-
-            # if current_epoch != self.epoch:  # TODO: make epoch count flexible
-            #     self.epoch = current_epoch
-            #     self.batch_count = 0
 
             if batch_idx == self.batch_count:
                 logger.info(
