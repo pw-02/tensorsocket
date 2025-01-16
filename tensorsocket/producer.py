@@ -47,7 +47,7 @@ class ConsumerProgress:
         """
         # assert id == self.batch_max
         self.id_queue.append(id)
-        self.payload_queue.append(payload)
+        # self.payload_queue.append(payload)
 
     def remove_batch(self, id: int) -> None:
         """Remove the leftmost ID/payload pair. ID must match arg0.
@@ -60,7 +60,7 @@ class ConsumerProgress:
         """
         # assert id == self.batch_count
         self.id_queue.popleft()
-        self.payload_queue.popleft()
+        # self.payload_queue.popleft()
 
     def reset(self):
         """Clear all stored IDs and payloads."""
@@ -93,7 +93,7 @@ class ConsumerProgress:
         )
 
 
-def process_tensor(tensor: Any, do_cuda: bool) -> TensorPayload:
+def process_tensor(tensor: Any) -> TensorPayload:
     """Process single tensor for transmission.
 
     Args:
@@ -103,15 +103,17 @@ def process_tensor(tensor: Any, do_cuda: bool) -> TensorPayload:
         Processed tensor wrapped in TensorPayload
     """
     if isinstance(tensor, Tensor):
-        if do_cuda:
-            if cuda.is_available():
-                tensor = tensor.to(device="cuda")
-        else:
-            tensor = TensorPayload(tensor)
+        tensor = TensorPayload(tensor)
     return tensor
 
 
-def pack(data: tuple, do_cuda: bool) -> tuple:
+def data_to_cuda(data: tuple) -> tuple:
+    return tuple(
+        (element.to(device="cuda") for element in data if isinstance(element, Tensor))
+    )
+
+
+def pack(data: tuple) -> tuple:
     """Pack multiple tensors for transmission.
 
     Args:
@@ -120,7 +122,7 @@ def pack(data: tuple, do_cuda: bool) -> tuple:
     Returns:
         Tuple of processed tensors
     """
-    return tuple((process_tensor(t, do_cuda) for t in data))
+    return tuple((process_tensor(t) for t in data))
 
 
 def slice(data: tuple, a: int, b: int) -> tuple:
@@ -133,6 +135,55 @@ def collate(batches: list) -> tuple:
     """Collate multiple tensors"""
 
     return tuple((cat([batch[i] for batch in batches]) for i in range(len(batches[0]))))
+
+
+class TensorPool:
+    """A circular buffer for tensor data management.
+    PyTorch's shared memory operation leaks memory, which is why we need to use a pool.
+    This class implements a fixed-size circular buffer (pool) for managing tensor data,
+    with support for CUDA devices if available. It handles automatic overwriting of old
+    data when the pool is full.
+    """
+
+    def __init__(self, max_size: int = 10) -> None:
+        self.pool = [None] * max_size
+        self.max_size = max_size
+        self.index = 0
+
+    def _overwrite_data(destination: tuple, source: tuple) -> tuple:
+        """Overwrite data from source to destination tensors.
+        This function copies data from source tensors to destination tensors in-place.
+        Args:
+            destination (tuple): Tuple containing destination tensors to be overwritten
+            source (tuple): Tuple containing source tensors to copy from
+        Returns:
+            tuple: The destination tuple with updated tensor values
+        """
+
+        for dest, src in zip(destination, source):
+            if isinstance(src, Tensor):
+                dest.copy_(src)
+        return destination
+
+    def assign(self, data: tuple) -> None:
+        """
+        Assigns data to the next available slot in the circular buffer.
+        Args:
+            data (tuple): Data to be assigned to buffer.
+        Returns:
+            The data element that was just assigned to the buffer.
+        """
+
+        self.index = (self.index + 1) % self.max_size
+
+        if self.pool[self.index] is not None:
+            self.overwrite_data(self.pool[self.index], data)
+        else:
+            if cuda.is_available():
+                data = data_to_cuda(data)
+            self.pool[self.index] = data
+
+        return self.pool[self.index]
 
 
 class TensorProducer:
@@ -182,6 +233,7 @@ class TensorProducer:
         self.pack_fn = pack_fn
         self.producer_batch_size = producer_batch_size
         self.loader_batch_size = 0
+        self.pool = TensorPool()
 
         self.index = 0
         self.context = zmq.Context()
@@ -373,7 +425,7 @@ class TensorProducer:
 
                 # if buffer full, pop from end
                 if len(self.rb_buffer) > self.rb_max_len:
-                    _ = self.rb_buffer.pop(0)
+                    t = self.rb_buffer.pop(0)
 
                 self.index += 1
 
@@ -446,7 +498,7 @@ class TensorProducer:
             ]
         )
 
-        data = self.pack_fn(data, True)  # TODO: remove cuda flag
+        data = self.pool.assign(data)
 
         payload = {}
         for bs, bmax in (
@@ -479,7 +531,7 @@ class TensorProducer:
                 #     )
                 messages.append(
                     dict(
-                        data=self.pack_fn(slice(data, offset, offset + bs), False),
+                        data=self.pack_fn(slice(data, offset, offset + bs)),
                         current_epoch=current_epoch,
                         current_batch_index=bmax * self.loader_batch_size // bs + i,
                     )
