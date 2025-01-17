@@ -150,7 +150,7 @@ class TensorPool:
         self.max_size = max_size
         self.index = 0
 
-    def _overwrite_data(destination: tuple, source: tuple) -> tuple:
+    def _overwrite_data(self, destination: tuple, source: tuple) -> tuple:
         """Overwrite data from source to destination tensors.
         This function copies data from source tensors to destination tensors in-place.
         Args:
@@ -177,7 +177,7 @@ class TensorPool:
         self.index = (self.index + 1) % self.max_size
 
         if self.pool[self.index] is not None:
-            self.overwrite_data(self.pool[self.index], data)
+            self._overwrite_data(self.pool[self.index], data)
         else:
             if cuda.is_available():
                 data = data_to_cuda(data)
@@ -416,7 +416,7 @@ class TensorProducer:
 
                 # if buffer full, pop from end
                 if len(self.rb_buffer) > self.rb_max_len:
-                    t = self.rb_buffer.pop(0)
+                    _ = self.rb_buffer.pop(0)
 
                 self.index += 1
 
@@ -546,7 +546,6 @@ class TensorProducer:
                     == b"1"
                     # batch_max == self.consumers[consumer_index].batch_max
                 ):  #  TODO: missing safeguard
-                    print(consumer_index, batch_max)
                     if batch_max + 1 == self.data_loader_len:
                         # self.consumers.pop(consumer_index)
                         self.consumers[consumer_index].reset()

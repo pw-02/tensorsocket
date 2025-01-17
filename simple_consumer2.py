@@ -10,10 +10,10 @@ Please check out simple_producer.py for the paired producer script.
 
 consumer = TensorConsumer("5556", "5557", batch_size=40)
 for i, batch in enumerate(consumer):
-    b, (inputs, labels) = batch
+    (inputs, labels) = batch
     if labels != None:
         if True:
-            print(f"I:{i:0>7} -", b, labels[0], consumer.epoch, len(labels))
+            print(f"I:{i:0>7} -", labels[0], consumer.epoch, len(labels))
             # time.sleep(0.1)
             pass
     else:

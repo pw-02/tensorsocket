@@ -224,4 +224,5 @@ class TensorConsumer:
                     f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
                 )
                 self.batch_count += 1
-                return batch_idx, batch
+                # return batch_idx, batch
+                return batch
