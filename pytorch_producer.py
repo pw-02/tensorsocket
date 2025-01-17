@@ -32,14 +32,6 @@ for epoch in range(10):
     for i, _ in enumerate(producer):
         if not i % 100:
             pass
-    # test_loader_iter = iter(test_loader)
-    # while True:
-    #     try:
-    #         n = next(test_loader_iter)
-    #         print(test_loader_iter._num_yielded)
-    #     except StopIteration:
-    #         break
-    # # end of epoch
 
-# producer.join()
+producer.join()
 print("finished")

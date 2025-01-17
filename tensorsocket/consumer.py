@@ -6,7 +6,6 @@ from queue import Queue
 from typing import Tuple, Any, Iterator
 
 import zmq
-from zmq import devices
 
 from .payload import TensorPayload
 from .heartbeat import Heart
@@ -118,7 +117,6 @@ class TensorConsumer:
         """
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
-            # print(cuda_tensor_info)
 
             if "data_loader_len" in cuda_tensor_info:
                 continue
@@ -134,36 +132,10 @@ class TensorConsumer:
             else:  # Ignore
                 messages = []
 
-            # messages = cuda_tensor_info["-1"]
-
             received_new = False
-
-            # # ignore and bounce back as others are banding
-            # if messages[0]["current_batch_index"] < self.batch_max + 1:
-            #     self.ack_socket.send_multipart(
-            #         [
-            #             bytes(str(self.consumer_id).encode("utf-8")),
-            #             bytes(str(self.batch_max).encode("utf-8")),
-            #             b"0",
-            #         ]
-            #     )
-
-            # # dont accept batch if it is from the future
-            # elif messages[0]["current_batch_index"] > self.batch_max + 1:
-            #     self.ack_socket.send_multipart(
-            #         [
-            #             bytes(str(self.consumer_id).encode("utf-8")),
-            #             bytes(str(self.batch_max).encode("utf-8")),
-            #             b"0",
-            #         ]
-            #     )
 
             for message in messages:
                 if message["current_batch_index"] == self.batch_max + 1:
-                    # t = self.unpack_fn(payload["data"])
-                    # print(
-                    #     f"received-{cuda_tensor_info['current_batch_index']}-{self.buffer.qsize()}-{t[1][0]}"
-                    # )
                     self.buffer.put(message)
                     self.batch_max = message["current_batch_index"]
                     received_new = True
@@ -205,15 +177,11 @@ class TensorConsumer:
         while True:
             payload = self.buffer.get()  # This will block if buffer is empty
 
-            # if payload.get("stop_iteration"):
             if "stop_iteration" in payload:
-                self.epoch += 1  # payload["stop_iteration"] TODO: do it like implemented rn to make epochs client-side
+                self.epoch += 1
                 self.batch_count = 0
                 self.batch_max = -1
-                # self.buffer = Queue(maxsize=self.max_buffer_size)
-                # print("reset")
                 continue
-                # raise StopIteration
 
             batch_idx = payload["current_batch_index"]
 

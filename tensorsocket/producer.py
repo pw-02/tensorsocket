@@ -31,7 +31,7 @@ class ConsumerProgress:
     """
 
     id_queue: deque[int]
-    payload_queue: deque[dict]
+    payload_queue: deque[dict]  # Deprecated
     loader_batch_size: int
     batch_size: int
 
@@ -364,16 +364,9 @@ class TensorProducer:
 
         current_batch_index = self.index
 
-        # TODO add flex rubberbanding midrun
-
         try:
             send_len = False
             expected = [str(x) for x in self.hb.consumers]
-            # print(
-            #     [(x, y.batch_max) for x, y in self.consumers.items()],
-            #     len(self.rb_buffer),
-            #     self.index,
-            # )
 
             for consumer in expected:
                 if str(consumer) not in self.consumers:
@@ -402,11 +395,10 @@ class TensorProducer:
             batch_length = len(self.rb_buffer[buffer_index:])
 
             if batch_length < self.producer_batch_size:
-                # add CPU tensors to rubberband buffer TODO: make sure not gpu and dont always pull from this
+                # add CPU tensors to rubberband buffer
                 self.rb_buffer.append((self.index, next(self.data_loader_iter)))
 
                 # if loader batch size not yet determined, set it
-                # TODO: move to a custom defined function so that it can be overwritten
                 if self.loader_batch_size == 0:
                     self.loader_batch_size = len(self.rb_buffer[-1][1][0])
                     for consumer in self.consumers:
@@ -434,8 +426,7 @@ class TensorProducer:
         self.index = 0
         self.epoch += 1
         self.rb_buffer = []
-        self.socket.send_pyobj({"stop_iteration": self.epoch})  # TODO: fix
-        # self.socket.send_pyobj({"stop_iteration": 1})  # TODO: fix
+        self.socket.send_pyobj({"stop_iteration": self.epoch})
         raise StopIteration
 
     def _broadcast(
@@ -469,8 +460,7 @@ class TensorProducer:
         for bs, bmax in (
             (self.consumers[x].batch_size, self.consumers[x].batch_max)
             for x in self.consumers
-        ):  # TODO: disconnect from prodbatchsize, at the moment synced
-            # TODO: do this *per consumer*
+        ):
             messages = []
 
             for i, offset in enumerate(
@@ -479,7 +469,7 @@ class TensorProducer:
                     len(data[0]),
                     bs,
                 )
-            ):  # TODO: swap with offset of consumer
+            ):
                 if offset + bs > len(data[0]):
                     break
 
@@ -547,9 +537,7 @@ class TensorProducer:
                     # batch_max == self.consumers[consumer_index].batch_max
                 ):  #  TODO: missing safeguard
                     if batch_max + 1 == self.data_loader_len:
-                        # self.consumers.pop(consumer_index)
                         self.consumers[consumer_index].reset()
-                        # print("reset!")
                     else:
                         self.consumers[consumer_index].add_batch(batch_max, payload)
 
