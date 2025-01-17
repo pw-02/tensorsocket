@@ -3,9 +3,12 @@ import sys
 import threading
 import uuid
 from queue import Queue
+from typing import Tuple, Any, Iterator
 
 import zmq
-from zmq import devices
+
+from .payload import TensorPayload
+from .heartbeat import Heart
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -18,22 +21,47 @@ logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://localhost"
 
 
+def unpack(data: tuple) -> tuple:
+    """Convert TensorPayload objects back to tensors.
+
+    Args:
+        data: Tuple containing possible TensorPayload objects
+
+    Returns:
+        Tuple with reconstructed tensors
+    """
+    return tuple((t.tensor if isinstance(t, TensorPayload) else t for t in data))
+
+
 class TensorConsumer:
+    """Receives and processes tensor batches from remote producer.
+
+    Handles:
+    - Connection to producer
+    - Batch receiving and unpacking
+    - Progress tracking
+    - Heartbeat monitoring
+    """
+
     def __init__(
         self,
         port: int = 5555,
         ack_port: int = 5556,
-        heart_ports: (int, int) = (4444, 4445),
-        max_buffer_size: int = 10,
-    ):
-        """Data loader (iterator) that receives inputs and labels over tcp.
+        heart_ports: tuple[int, int] = (4444, 4445),
+        unpack_fn=unpack,
+        batch_size: int = 64,
+    ) -> None:
+        """Initialize consumer connection.
 
         Args:
-            port (int, optional): Data transmission port. Defaults to 5555.
-            ack_port (int, optional): Acknowledgement port. Defaults to 5556.
-            heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
-            max_buffer_size (int, optional): How many batches of data to hold in consumer buffer. Defaults to 10.
+            port: Data reception port
+            ack_port: Acknowledgement sending port
+            heart_ports: (in, out) ports for heartbeat
+            unpack_fn: Function to reconstruct tensors
         """
+        self.unpack_fn = unpack_fn
+        self.batch_size = batch_size
+
         self.port = port
         self.ack_port = ack_port
         self.heart_ports = heart_ports
@@ -48,68 +76,121 @@ class TensorConsumer:
         self.ack_socket = self.context.socket(zmq.PUB)
         self.ack_socket.connect(f"{LOCALHOST}:{self.ack_port}")
 
+        # Logic
+        self.batch_count = 0
+        self.batch_max = -1
+        self.epoch = 0
+        # self.receiving_epoch = 0
+
         # Heartbeat
-        self.dev = devices.ThreadDevice(zmq.FORWARDER, zmq.SUB, zmq.DEALER)
-        self.dev.setsockopt_in(zmq.SUBSCRIBE, b"")
-        self.dev.connect_in(f"{LOCALHOST}:{self.heart_ports[0]}")
-        self.dev.connect_out(f"{LOCALHOST}:{self.heart_ports[1]}")
-        self.dev.start()
+        self.heart = Heart(
+            self,
+            self.consumer_id,
+            self.batch_size,
+            f"{LOCALHOST}:{self.heart_ports[0]}",
+            f"{LOCALHOST}:{self.heart_ports[1]}",
+        )
+        self.heart.daemon = True
+        self.heart.start()
 
         # On spawn, fetch payloads on socket until we get one with the data loader length
         while True:
             data = self.socket.recv_pyobj()
             if data.get("data_loader_len"):
                 self.data_loader_len = data.get("data_loader_len")
+                self.max_buffer_size = data.get("max_buffer_size")
                 break
 
         # Buffer setup
-        self.buffer = Queue(maxsize=max_buffer_size)
+        self.buffer = Queue(maxsize=self.max_buffer_size)
         self.fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
         self.fetch_thread.start()
 
-        # Logic
-        self.batch_count = 0
-        self.epoch = 0
+    def _fetch_loop(self) -> None:
+        """Background thread for receiving batches.
 
-    def _fetch_loop(self):
+        Continuously:
+        1. Receives tensor data
+        2. Handles special messages (length, stop)
+        3. Processes regular batches
+        4. Sends acknowledgements
+        """
         while True:
             cuda_tensor_info = self.socket.recv_pyobj()
-            self.buffer.put(cuda_tensor_info)
 
-            self.ack_socket.send_multipart(
-                [
-                    bytes(str(self.consumer_id).encode("utf-8")),
-                    bytes(str(self.batch_count).encode("utf-8")),
-                ]
-            )
-
-    def __iter__(self):
-        return self
-
-    def __len__(self):
-        return self.data_loader_len
-
-    def __next__(self):
-        while True:
-            cuda_tensor_info = self.buffer.get()  # This will block if buffer is empty
-            if cuda_tensor_info.get("data_loader_len"):
+            if "data_loader_len" in cuda_tensor_info:
                 continue
 
-            if cuda_tensor_info.get("stop_iteration"):
-                raise StopIteration
+            if "stop_iteration" in cuda_tensor_info:
+                self.buffer.put(cuda_tensor_info)
+                continue
 
-            current_epoch = cuda_tensor_info.pop("current_epoch")
-            batch_idx = cuda_tensor_info.pop("current_batch_index")
+            if f"{self.batch_size}" in cuda_tensor_info:  # Flexible
+                messages = cuda_tensor_info[f"{self.batch_size}"]
+            elif "-1" in cuda_tensor_info and len(cuda_tensor_info) == 1:  # Static
+                messages = cuda_tensor_info["-1"]
+            else:  # Ignore
+                messages = []
 
-            batch = (v.tensor for k, v in cuda_tensor_info.items())
+            received_new = False
 
-            if current_epoch != self.epoch:
-                self.epoch = current_epoch
+            for message in messages:
+                if message["current_batch_index"] == self.batch_max + 1:
+                    self.buffer.put(message)
+                    self.batch_max = message["current_batch_index"]
+                    received_new = True
+
+            if received_new:
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(str(self.batch_max).encode("utf-8")),
+                        b"1",
+                    ]
+                )
+            else:
+                self.ack_socket.send_multipart(
+                    [
+                        bytes(str(self.consumer_id).encode("utf-8")),
+                        bytes(str(self.batch_max).encode("utf-8")),
+                        b"0",
+                    ]
+                )
+
+    def __iter__(self) -> Iterator:
+        """Make consumer iterable for batch processing."""
+        return self
+
+    def __len__(self) -> int:
+        """Get total number of batches in dataset."""
+        return self.data_loader_len
+
+    def __next__(self) -> Tuple[int, Any]:
+        """Get next batch from buffer.
+
+        Returns:
+            Tuple of (batch_index, tensor_data)
+
+        Raises:
+            StopIteration: At end of epoch
+        """
+        while True:
+            payload = self.buffer.get()  # This will block if buffer is empty
+
+            if "stop_iteration" in payload:
+                self.epoch += 1
                 self.batch_count = 0
+                self.batch_max = -1
+                continue
 
-            logger.info(
-                f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
-            )
+            batch_idx = payload["current_batch_index"]
+
+            batch = self.unpack_fn(payload["data"])
+
             if batch_idx == self.batch_count:
+                logger.info(
+                    f"Epoch: {self.epoch}, batch_idx: {batch_idx}, batch count: {self.batch_count}"
+                )
                 self.batch_count += 1
+                # return batch_idx, batch
                 return batch

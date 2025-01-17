@@ -1,4 +1,5 @@
 import torch
+import time
 
 from tensorsocket.producer import TensorProducer
 
@@ -10,8 +11,10 @@ Please check out simple_consumer.py for the paired consumer script.
 
 
 class DummyLoader:
-    def __init__(self, length=100000):
+    def __init__(self, length=10000):
         self.length = length
+        self.id = 0
+        self.batch_size = 8
 
     def __len__(self):
         return self.length
@@ -20,15 +23,24 @@ class DummyLoader:
         return self
 
     def __next__(self):
-        return torch.rand((100, 200, 10)), torch.rand((10,))
+        a, b = (
+            self.id * torch.ones((self.batch_size, 1000, 2000)),
+            self.id * torch.ones((self.batch_size,)),
+        )
+
+        self.id += 1
+        return a, b
 
 
 data_loader = DummyLoader()
 
 
-producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02)
+producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.2)
 
-for _ in producer:
-    pass
+for epoch in range(10):
+    for i, _ in enumerate(producer):
+        time.sleep(0.001)
+        if not i % 100:
+            pass
 producer.join()
 print("finished")

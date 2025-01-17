@@ -3,40 +3,221 @@ import threading
 import time
 import zmq
 
-from torch import Tensor, device
+from collections import deque
+from dataclasses import dataclass
+from torch import Tensor, cuda, cat
 from tornado import ioloop
+from typing import Any, Iterator, Optional
 from zmq.eventloop import zmqstream
 
 from .heartbeat import HeartBeater
 from .payload import TensorPayload
 
 logger = logging.getLogger("tensorsocket")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 LOCALHOST = "tcp://*"
 
 
-class TensorProducer:
-    def __init__(
-        self,
-        data_loader: object,
-        port: int = 5555,
-        ack_port: int = 5556,
-        heart_ports: (int, int) = (4444, 4445),
-        rubber_band_pct: int = 0.02,
-        clip=None,
-        online=False,
-    ):
-        """
-        Data loader that sends inputs and labels over tcp to training processes (consumers).
+@dataclass
+class ConsumerProgress:
+    """Tracks progress of individual consumers through dataset.
+
+    Maintains ordered queues for batch IDs and payloads to ensure sequential processing
+    and proper synchronization between producer and consumer.
+
+    Attributes:
+        id_queue: Queue storing sequential batch IDs
+        payload_queue: Queue storing corresponding tensor payloads
+    """
+
+    id_queue: deque[int]
+    payload_queue: deque[dict]  # Deprecated
+    loader_batch_size: int
+    batch_size: int
+
+    def add_batch(self, id: int, payload: dict) -> None:
+        """Add a new batch to tracking queues.
 
         Args:
-            data_loader (object): Data loader to wrap around. Should be iterable.
-            port (int, optional): Data transmission port. Defaults to 5555.
-            ack_port (int, optional): Acknowledgement port. Defaults to 5556.
-            heart_ports (int, int, optional): Life pulse ports. Defaults to (4444, 4445).
-            rubber_band_pct (int, optional): Maximum allowed distance between consumers, in percent of training dataset size. Defaults to 0.02.
-            clip (optional): CLIP model that can embed images and text. Useful in DALLE2 training.
-            online (bool, optional): Whether to generate CLIP image embeddings online.
+            id: Sequential batch identifier
+            payload: Associated tensor data and metadata
+
+        Raises:
+            AssertionError: If batch ID is not sequential
+        """
+        # assert id == self.batch_max
+        self.id_queue.append(id)
+        # self.payload_queue.append(payload)
+
+    def remove_batch(self, id: int) -> None:
+        """Remove the leftmost ID/payload pair. ID must match arg0.
+
+        Args:
+            id: Sequential batch identifier
+
+        Raises:
+            AssertionError: If batch ID does not match the leftmost ID
+        """
+        # assert id == self.batch_count
+        self.id_queue.popleft()
+        # self.payload_queue.popleft()
+
+    def reset(self):
+        """Clear all stored IDs and payloads."""
+        self.id_queue.clear()
+        self.payload_queue.clear()
+
+    # @property
+    # def batch_count(self) -> int:
+    #     """Get the current batch count.
+
+    #     Returns:
+    #         The leftmost batch ID in the queue.
+    #     """
+    #     return self.id_queue[0] * self.batch_size // self.loader_batch_size
+
+    @property
+    def batch_max(self) -> int:
+        """Get the maximum batch ID.
+
+        Returns:
+            The rightmost batch ID in the queue plus one, or 0 if the queue is empty.
+        """
+        if self.loader_batch_size == 0:
+            return 0
+
+        return (
+            (self.id_queue[-1] + 1 if self.id_queue else 0)
+            * self.batch_size
+            // self.loader_batch_size
+        )
+
+
+def process_tensor(tensor: Any) -> TensorPayload:
+    """Process single tensor for transmission.
+
+    Args:
+        tensor: PyTorch tensor to process
+
+    Returns:
+        Processed tensor wrapped in TensorPayload
+    """
+    if isinstance(tensor, Tensor):
+        tensor = TensorPayload(tensor)
+    return tensor
+
+
+def data_to_cuda(data: tuple) -> tuple:
+    return tuple(
+        (element.to(device="cuda") for element in data if isinstance(element, Tensor))
+    )
+
+
+def pack(data: tuple) -> tuple:
+    """Pack multiple tensors for transmission.
+
+    Args:
+        data: Tuple of tensors to process
+
+    Returns:
+        Tuple of processed tensors
+    """
+    return tuple((process_tensor(t) for t in data))
+
+
+def slice(data: tuple, a: int, b: int) -> tuple:
+    """Slice multiple tensors"""
+
+    return tuple((element[a:b] for element in data))
+
+
+def collate(batches: list) -> tuple:
+    """Collate multiple tensors"""
+
+    return tuple((cat([batch[i] for batch in batches]) for i in range(len(batches[0]))))
+
+
+class TensorPool:
+    """A circular buffer for tensor data management.
+    PyTorch's shared memory operation leaks memory, which is why we need to use a pool.
+    This class implements a fixed-size circular buffer (pool) for managing tensor data,
+    with support for CUDA devices if available. It handles automatic overwriting of old
+    data when the pool is full.
+    """
+
+    def __init__(self, max_size: int = 10) -> None:
+        self.pool = [None] * max_size
+        self.max_size = max_size
+        self.index = 0
+
+    def _overwrite_data(self, destination: tuple, source: tuple) -> tuple:
+        """Overwrite data from source to destination tensors.
+        This function copies data from source tensors to destination tensors in-place.
+        Args:
+            destination (tuple): Tuple containing destination tensors to be overwritten
+            source (tuple): Tuple containing source tensors to copy from
+        Returns:
+            tuple: The destination tuple with updated tensor values
+        """
+
+        for dest, src in zip(destination, source):
+            if isinstance(src, Tensor):
+                dest.copy_(src)
+        return destination
+
+    def assign(self, data: tuple) -> None:
+        """
+        Assigns data to the next available slot in the circular buffer.
+        Args:
+            data (tuple): Data to be assigned to buffer.
+        Returns:
+            The data element that was just assigned to the buffer.
+        """
+
+        self.index = (self.index + 1) % self.max_size
+
+        if self.pool[self.index] is not None:
+            self._overwrite_data(self.pool[self.index], data)
+        else:
+            if cuda.is_available():
+                data = data_to_cuda(data)
+            self.pool[self.index] = data
+
+        return self.pool[self.index]
+
+
+class TensorProducer:
+    """Distributes tensor batches to multiple training processes over ZMQ.
+
+    Handles:
+    - Dataset iteration and batch distribution
+    - Consumer health monitoring via heartbeat
+    - Acknowledgement tracking
+    - Rubberbanding for consumer synchronization
+    - Automatic cleanup of disconnected consumers
+    """
+
+    def __init__(
+        self,
+        data_loader: Iterator,
+        port: int = 5555,
+        ack_port: int = 5556,
+        heart_ports: tuple[int, int] = (4444, 4445),
+        rubber_band_pct: float = 0.2,  # TODO: revert
+        pack_fn: callable = pack,
+        consumer_max_buffer_size: int = 10,
+        producer_batch_size: int = 8,  # TODO: divide
+    ) -> None:
+        """Initialize producer with configuration.
+
+        Args:
+            data_loader: Source of tensor batches
+            port: Main data transmission port
+            ack_port: Consumer acknowledgement port
+            heart_ports: (Pub, Sub) ports for heartbeat monitoring
+            rubber_band_pct: Max allowed consumer lag as % of dataset
+            pack_fn: Function to prepare tensors for transmission
+            consumer_max_buffer_size: Max queued batches per consumer
         """
         self.port = port
         self.ack_port = ack_port
@@ -47,15 +228,17 @@ class TensorProducer:
         try:
             self.data_loader_iter = iter(self.data_loader)
         except TypeError:
-            print("TensorSocket: DataLoader is already iterable")
-            self.data_loader_iter = self.data_loader
+            raise TypeError("TensorSocket: DataLoader is already iterable")
 
-        self.clip = clip
-        self.online = online
+        self.pack_fn = pack_fn
+        self.producer_batch_size = producer_batch_size
+        self.loader_batch_size = 0
+        self.pool = TensorPool()
 
         self.index = 0
-        self.consumer_count = 0
         self.context = zmq.Context()
+        self.consumers = {}
+        self.consumer_max_buffer_size = consumer_max_buffer_size
 
         # Send batches via
         self.socket = self.context.socket(zmq.PUB)
@@ -65,7 +248,6 @@ class TensorProducer:
         self.ack_socket = self.context.socket(zmq.SUB)
         self.ack_socket.bind(f"{LOCALHOST}:{self.ack_port}")
         self.ack_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.ack_count = 0
 
         # Heartbeat monitor
         self.hb = None
@@ -91,142 +273,215 @@ class TensorProducer:
         self.rb_buffer = list()
         self.rb_max_len = rubber_band_pct * self.data_loader_len
         self.rb_running = False
-        self.buffer_idx = (
-            0  # the current batch in the buffer we are sending to the consumers
-        )
 
-    def _start_heartbeat(self):
+        self.active_payloads = []
+
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat monitoring system.
+
+        Sets up ZMQ pub/sub socket pair for tracking consumer connections
+        and initializes event loop for async heartbeat processing.
+        """
         self.loop = ioloop.IOLoop()
         context = zmq.Context()
         pub = context.socket(zmq.PUB)
         pub.bind(f"{LOCALHOST}:{self.heart_ports[0]}")
-        router = context.socket(zmq.ROUTER)
-        router.bind(f"{LOCALHOST}:{self.heart_ports[1]}")
+        sub = context.socket(zmq.SUB)
+        sub.bind(f"{LOCALHOST}:{self.heart_ports[1]}")
+        sub.subscribe(b"")
 
         outstream = zmqstream.ZMQStream(pub, self.loop)
-        instream = zmqstream.ZMQStream(router, self.loop)
+        instream = zmqstream.ZMQStream(sub, self.loop)
 
         self.hb = HeartBeater(self.loop, outstream, instream)
         self.loop.start()
 
-    def _heartbeat_monitor(self):
+    def _heartbeat_monitor(self) -> None:
+        """Monitor heartbeat in background thread.
+
+        Runs continuously until producer shutdown, checking consumer health.
+        """
         while True:
-            if len(self.hb.hearts) != self.consumer_count:
-                if len(self.hb.hearts) > self.consumer_count:
-                    self._set_consumer_len()
-                self._set_consumer_count(len(self.hb.hearts))
             if not self._heartbeat_monitor_alive:
                 break
             time.sleep(1)
 
-    def join(self):
+    def join(self) -> None:
+        """Clean shutdown of producer threads and event loops.
+
+        Stops heartbeat monitoring and joins all background threads.
+        """
         self.loop.stop()
         self.heartbeat_thread.join()
         self._heartbeat_monitor_alive = False
         self.heartbeat_monitor_thread.join()
 
-    def _set_consumer_count(self, new_consumer_count):
-        self.consumer_count = new_consumer_count
+    def __iter__(self) -> Iterator:
+        """Return an iterator for the data loader.
 
-    def __iter__(self):
+        Returns:
+            An iterator for the data loader.
+        """
         self.data_loader_iter = iter(self.data_loader)
         return self
 
-    def __next__(self):
+    def __next__(self) -> tuple:
+        """Get the next sample from the data loader.
+
+        Returns:
+            The next sample from the data loader.
+        """
         return self.get_sample()
 
-    def get_sample(self):
+    def get_sample(self) -> Optional[tuple]:
+        """Core batch distribution method.
+
+        Handles:
+        1. Dead consumer cleanup
+        2. Epoch boundaries and dataset reset
+        3. Consumer synchronization via rubberbanding
+        4. Batch transmission and acknowledgement processing
+
+        Returns:
+            Tensor batch or None if no active consumers
+
+        Raises:
+            StopIteration: At end of epoch
+        """
+        # clean up dead consumers
+        for consumer in list(self.consumers.keys()):
+            if consumer not in self.hb.consumers:
+                self.consumers.pop(consumer)
+
         if self.index >= self.data_loader_len:
-            self.index = 0
-            self.epoch += 1
-            self.rb_buffer = []
-            raise StopIteration
+            self._reset_producer()
 
         # idle when no consumers attached
-        elif len(self.hb.hearts) == 0:
+        elif not len(self.hb.consumers):
             logger.info("No consumers, waiting ...")
             time.sleep(0.5)
             return
 
         current_batch_index = self.index
-        # if we are relatively early in the epoch, allow for new proc to catch up
-        # also reset buffer index to handle if new consumers keep joining in
-        if (
-            (self.consumer_count > 0)
-            and (len(self.hb.hearts) > self.consumer_count)
-            and (current_batch_index < self.rb_max_len)
-        ):
-            logger.info("Rubberbanding")
-            self.rb_running = True
-            self.buffer_idx = 0
+
         try:
-            # add CPU tensors to rubberband buffer
-            if not self.rb_running:
-                inputs, labels = next(self.data_loader_iter)
-                self.rb_buffer.append((current_batch_index, inputs, labels))
+            send_len = False
+            expected = [str(x) for x in self.hb.consumers]
 
-            # if buffer full, pop from end
-            if len(self.rb_buffer) > self.rb_max_len:
-                _ = self.rb_buffer.pop(-1)
+            for consumer in expected:
+                if str(consumer) not in self.consumers:
+                    self.consumers[str(consumer)] = ConsumerProgress(
+                        deque(maxlen=self.consumer_max_buffer_size + 1),
+                        deque(maxlen=self.consumer_max_buffer_size + 1),
+                        self.loader_batch_size,
+                        self.hb.heart_batch_size[str(consumer)],
+                    )
+                    send_len = True
 
-            if self.rb_running:
-                current_batch_index, inputs, labels = self.rb_buffer[self.buffer_idx]
-                self.buffer_idx += 1
+            if send_len:
+                self._send_consumer_len()
 
-            if self.clip:
-                if self.online:
-                    text, image = labels, inputs  # text and image inverted
-                    image = image.to(device("cuda"))
-                    image_embed, _ = self.clip.embed_image(image)
+            if self.rb_buffer:
+                if (
+                    min_batch := min([x.batch_max for x in self.consumers.values()])
+                ) not in [x[0] for x in self.rb_buffer]:
+                    current_batch_index, buffer_index = -1, -1
                 else:
-                    text, image_embed = labels, inputs  # text and image inverted
-                    image_embed = image_embed.to(device("cuda"))
-                text = text.to(device("cuda"))
-                text_embed, text_encodings = self.clip.embed_text(text)
-
-                payload = dict(
-                    text_embed=text_embed,
-                    text_encodings=text_encodings,
-                    image_embed=image_embed,
-                )
+                    buffer_index = [x[0] for x in self.rb_buffer].index(min_batch)
+                    current_batch_index, _ = self.rb_buffer[buffer_index]
             else:
-                payload = dict(inputs=inputs, labels=labels)
+                current_batch_index, buffer_index = 0, 0
 
-            # self._broadcast(self.epoch, current_batch_index, inputs, labels)
-            # self._broadcast(self.epoch, current_batch_index, text_embed, text_encodings, image_embed)
-            self._broadcast(self.epoch, current_batch_index, payload)
-            self._handle_acks()
+            batch_length = len(self.rb_buffer[buffer_index:])
 
-            if not self.rb_running:
+            if batch_length < self.producer_batch_size:
+                # add CPU tensors to rubberband buffer
+                self.rb_buffer.append((self.index, next(self.data_loader_iter)))
+
+                # if loader batch size not yet determined, set it
+                if self.loader_batch_size == 0:
+                    self.loader_batch_size = len(self.rb_buffer[-1][1][0])
+                    for consumer in self.consumers:
+                        self.consumers[consumer].loader_batch_size = (
+                            self.loader_batch_size
+                        )
+
+                # if buffer full, pop from end
+                if len(self.rb_buffer) > self.rb_max_len:
+                    _ = self.rb_buffer.pop(0)
+
                 self.index += 1
 
-            if len(self.rb_buffer) == self.buffer_idx:
-                self.rb_running = False
-            # first batch, return starting time. only relevant for dalle2
-            if current_batch_index == 0:
-                return time.time()
+                return
+
+            expected = [x for x in expected]
+            payload = self._broadcast(self.epoch, current_batch_index, buffer_index)
+            self._handle_acks(expected, current_batch_index, payload)
+
         except StopIteration:
-            self.socket.send_pyobj({"stop_iteration": 1})
-            raise StopIteration
+            self._reset_producer()
+
+    def _reset_producer(self):
+        self.data_loader_iter = iter(self.data_loader)
+        self.index = 0
+        self.epoch += 1
+        self.rb_buffer = []
+        self.socket.send_pyobj({"stop_iteration": self.epoch})
+        raise StopIteration
 
     def _broadcast(
-        self,
-        current_epoch: int,
-        current_batch_index: int,
-        payload: dict,
-    ):
-        def pack_tensor(t: Tensor):
-            # t = t.to(device("cuda"))
-            t = TensorPayload(t)
-            return t
+        self, current_epoch: int, current_batch_index: int, buffer_index: int
+    ) -> dict:
+        """Broadcast tensor batch to all connected consumers.
 
-        payload = {k: pack_tensor(v) for k, v in payload.items()}
+        Args:
+            current_epoch: Training epoch number
+            current_batch_index: Current batch index in epoch
+            data: Tensor batch to transmit
 
-        payload = dict(
-            **payload,
-            current_epoch=current_epoch,
-            current_batch_index=current_batch_index,
+        Returns:
+            Dict containing packed tensors and metadata
+
+        Logs progress every 100 batches.
+        """
+
+        data = collate(
+            [
+                x[1]
+                for x in self.rb_buffer[
+                    buffer_index : buffer_index + self.producer_batch_size
+                ]
+            ]
         )
+
+        data = self.pool.assign(data)
+
+        payload = {}
+        for bs, bmax in (
+            (self.consumers[x].batch_size, self.consumers[x].batch_max)
+            for x in self.consumers
+        ):
+            messages = []
+
+            for i, offset in enumerate(
+                range(
+                    (bmax - current_batch_index) * self.loader_batch_size,
+                    len(data[0]),
+                    bs,
+                )
+            ):
+                if offset + bs > len(data[0]):
+                    break
+
+                messages.append(
+                    dict(
+                        data=self.pack_fn(slice(data, offset, offset + bs)),
+                        current_epoch=current_epoch,
+                        current_batch_index=bmax * self.loader_batch_size // bs + i,
+                    )
+                )
+
+            payload[f"{bs}"] = messages
 
         if current_batch_index % 100 == 0:
             logger.info(
@@ -235,32 +490,84 @@ class TensorProducer:
             )
 
         self.socket.send_pyobj(payload)
+        return payload
 
-    def _handle_acks(self):
+    def _handle_acks(
+        self, expected: list, current_batch_index: int, payload: dict
+    ) -> None:
+        """Process acknowledgements from consumers.
+
+        Args:
+            expected: List of consumer IDs to wait for
+            current_batch_index: Index of batch being acknowledged
+            payload: Transmitted data payload
+
+        Times out after 10 seconds if consumers unresponsive.
+        Maintains synchronization by tracking accepted batches.
+        """
         while True:
+            # received all Acks, can go to next batch
+            if not len(expected):
+                return
+
             if self.ack_socket.poll(10000, zmq.POLLIN):
                 (
                     consumer_index,
-                    batch_count,
+                    batch_max,
+                    accepted,
                 ) = (
                     self.ack_socket.recv_multipart()
                 )  # wait for consumer acknowledgement
+
+                batch_max = int(batch_max)
+                consumer_index = str(consumer_index)
+
                 logger.info(
                     f"Consumer: {consumer_index}, "
-                    f"batch count: {batch_count}, "
+                    f"batch count: {batch_max}, "
                     f"total batches: {self.data_loader_len}"
                 )
-                self.ack_count += 1
-                # received all Acks, can go to next batch
-                if self.ack_count == self.consumer_count:
-                    self.ack_count = 0
-                    break
-            else:
-                print("Timeout on Ack, assuming consumer is dead")
-                self.consumer_count -= 1
 
-    def __len__(self):
+                if consumer_index in expected:
+                    expected.remove(consumer_index)
+
+                if (
+                    accepted
+                    == b"1"
+                    # batch_max == self.consumers[consumer_index].batch_max
+                ):  #  TODO: missing safeguard
+                    if batch_max + 1 == self.data_loader_len:
+                        self.consumers[consumer_index].reset()
+                    else:
+                        self.consumers[consumer_index].add_batch(batch_max, payload)
+
+            else:
+                logger.info(
+                    "Timeout on Ack, assuming consumer is dead",
+                    len(self.hb.consumers),
+                    expected,
+                )
+                expected = {}
+
+    def __len__(self) -> int:
+        """Get the length of the data loader.
+
+        Returns:
+            The number of batches in the data loader.
+        """
         return self.data_loader_len
 
-    def _set_consumer_len(self):
-        self.socket.send_pyobj({"data_loader_len": self.__len__()})
+    def _send_consumer_len(self) -> None:
+        """Send dataset metadata to newly connected consumers.
+
+        Transmits:
+        - Total number of batches in dataset
+        - Maximum allowed buffer size
+        """
+        logger.info("Sending data loader length")
+        self.socket.send_pyobj(
+            {
+                "data_loader_len": self.__len__(),
+                "max_buffer_size": self.consumer_max_buffer_size,
+            }
+        )
