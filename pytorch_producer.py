@@ -27,9 +27,11 @@ train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
 test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
 producer = TensorProducer(train_loader, "5556", "5557", rubber_band_pct=0.2)
+import time
 
 for epoch in range(10):
     for i, _ in enumerate(producer):
+        time.sleep(0.001)
         if not i % 100:
             pass
 
