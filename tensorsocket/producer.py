@@ -239,6 +239,7 @@ class TensorProducer:
         self.context = zmq.Context()
         self.consumers = {}
         self.consumer_max_buffer_size = consumer_max_buffer_size
+        self.send_len = False
 
         # Send batches via
         self.socket = self.context.socket(zmq.PUB)
@@ -365,7 +366,6 @@ class TensorProducer:
         current_batch_index = self.index
 
         try:
-            send_len = False
             expected = [str(x) for x in self.hb.consumers]
 
             for consumer in expected:
@@ -376,12 +376,15 @@ class TensorProducer:
                         self.loader_batch_size,
                         self.hb.heart_batch_size[str(consumer)],
                     )
-                    send_len = True
+                    self.send_len = True
 
-            if send_len:
+            # Can only send len if loader_batch_size is known
+            if self.send_len and self.loader_batch_size:
+                self.send_len = False
                 self._send_consumer_len()
 
             if self.rb_buffer:
+
                 if (
                     min_batch := min([x.batch_max for x in self.consumers.values()])
                 ) not in [x[0] for x in self.rb_buffer]:
@@ -569,5 +572,6 @@ class TensorProducer:
             {
                 "data_loader_len": self.__len__(),
                 "max_buffer_size": self.consumer_max_buffer_size,
+                "loader_batch_size": self.loader_batch_size,
             }
         )

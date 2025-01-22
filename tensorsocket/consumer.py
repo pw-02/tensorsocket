@@ -99,6 +99,7 @@ class TensorConsumer:
             if data.get("data_loader_len"):
                 self.data_loader_len = data.get("data_loader_len")
                 self.max_buffer_size = data.get("max_buffer_size")
+                self.loader_batch_size = data.get("loader_batch_size")
                 break
 
         # Buffer setup
@@ -163,7 +164,7 @@ class TensorConsumer:
 
     def __len__(self) -> int:
         """Get total number of batches in dataset."""
-        return self.data_loader_len
+        return self.data_loader_len * self.batch_size // self.loader_batch_size
 
     def __next__(self) -> Tuple[int, Any]:
         """Get next batch from buffer.
