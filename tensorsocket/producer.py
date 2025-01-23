@@ -203,7 +203,7 @@ class TensorProducer:
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
-        rubber_band_pct: float = 0.2,  # TODO: revert
+        rubber_band_pct: float = 0.005,  # TODO: revert
         pack_fn: callable = pack,
         consumer_max_buffer_size: int = 10,
         producer_batch_size: int = 8,  # TODO: divide

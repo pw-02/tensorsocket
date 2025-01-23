@@ -886,7 +886,7 @@ if __name__ == "__main__":
     args, args_text = _parse_args()
     args.rank = 0
     args.prefetcher = not args.no_prefetcher
-    args.device = torch.device("cuda") if args.gpu_prefetch else torch.device("cpu")
+    args.device = torch.device("cpu")  # No GPU here as TensorProducer does GPU movement
     random.seed(1337)
     torch.manual_seed(1337)
 
@@ -998,6 +998,7 @@ if __name__ == "__main__":
         for epoch in range(args.epochs):
             print(f"Epoch: {epoch}")
             for idx, _ in enumerate(train_producer):
+                print(idx)
                 pass
         train_producer.join()
         print("finished")
