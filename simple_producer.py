@@ -20,6 +20,7 @@ class DummyLoader:
         return self.length
 
     def __iter__(self):
+        self.id = 0
         return self
 
     def __next__(self):
@@ -35,12 +36,13 @@ class DummyLoader:
 data_loader = DummyLoader()
 
 
-producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.2)
+producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02)
 
 for epoch in range(10):
+    print("Epoch:", epoch)
     for i, _ in enumerate(producer):
         time.sleep(0.001)
         if not i % 100:
             pass
 producer.join()
-print("finished")
+print("Finished")

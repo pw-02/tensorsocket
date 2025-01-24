@@ -99,6 +99,7 @@ class TensorConsumer:
             if data.get("data_loader_len"):
                 self.data_loader_len = data.get("data_loader_len")
                 self.max_buffer_size = data.get("max_buffer_size")
+                self.loader_batch_size = data.get("loader_batch_size")
                 break
 
         # Buffer setup
@@ -125,8 +126,8 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
-            if f"{self.batch_size}" in cuda_tensor_info:  # Flexible
-                messages = cuda_tensor_info[f"{self.batch_size}"]
+            if str(self.consumer_id) in cuda_tensor_info:  # Flexible
+                messages = cuda_tensor_info[str(self.consumer_id)]
             elif "-1" in cuda_tensor_info and len(cuda_tensor_info) == 1:  # Static
                 messages = cuda_tensor_info["-1"]
             else:  # Ignore
@@ -163,7 +164,7 @@ class TensorConsumer:
 
     def __len__(self) -> int:
         """Get total number of batches in dataset."""
-        return self.data_loader_len
+        return self.data_loader_len * self.batch_size // self.loader_batch_size
 
     def __next__(self) -> Tuple[int, Any]:
         """Get next batch from buffer.
@@ -178,10 +179,15 @@ class TensorConsumer:
             payload = self.buffer.get()  # This will block if buffer is empty
 
             if "stop_iteration" in payload:
-                self.epoch += 1
                 self.batch_count = 0
                 self.batch_max = -1
-                continue
+                if (
+                    self.batch_count > 0
+                ):  # Increase epoch if we have received at least one batch
+                    self.epoch += 1
+                    raise StopIteration
+                else:
+                    continue
 
             batch_idx = payload["current_batch_index"]
 

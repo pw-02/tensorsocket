@@ -9,14 +9,16 @@ Please check out simple_producer.py for the paired producer script.
 """
 
 consumer = TensorConsumer("5556", "5557", batch_size=16)
-for i, batch in enumerate(consumer):
-    (inputs, labels) = batch
-    if labels != None:
-        if True:
-            print(f"I:{i:0>7} -", labels[0], consumer.epoch, len(labels))
-            # time.sleep(0.1)
-            pass
-    else:
-        print("Waiting ...")
+for epoch in range(10):
+    print("Epoch:", epoch)
+    for i, batch in enumerate(consumer):
+        (inputs, labels) = batch
+        if labels != None:
+            if True:
+                print(f"I:{i:0>7} -", labels[0], consumer.epoch, len(labels))
+                time.sleep(0.02)
+                pass
+        else:
+            print("Waiting ...")
 
 print("Finished")
