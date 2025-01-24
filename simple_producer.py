@@ -20,6 +20,7 @@ class DummyLoader:
         return self.length
 
     def __iter__(self):
+        self.id = 0
         return self
 
     def __next__(self):

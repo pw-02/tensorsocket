@@ -515,7 +515,6 @@ class TensorProducer:
                 )
 
             payload[consumer[2:-1]] = messages
-        print(payload, "\n")
 
         if current_batch_index % 100 == 0:
             logger.info(
