@@ -36,4 +36,4 @@ for epoch in range(10):
             pass
 
 producer.join()
-print("finished")
+print("Finished")
