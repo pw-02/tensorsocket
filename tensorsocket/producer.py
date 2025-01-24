@@ -203,7 +203,7 @@ class TensorProducer:
         port: int = 5555,
         ack_port: int = 5556,
         heart_ports: tuple[int, int] = (4444, 4445),
-        rubber_band_pct: float = 0.005,  # TODO: revert
+        rubber_band_pct: float = 0.005,
         pack_fn: callable = pack,
         consumer_max_buffer_size: int = 10,
         producer_batch_size: int = 8,  # TODO: divide
@@ -233,7 +233,7 @@ class TensorProducer:
         self.pack_fn = pack_fn
         self.producer_batch_size = producer_batch_size
         self.loader_batch_size = 0
-        self.pool = TensorPool()
+        self.pool = TensorPool(consumer_max_buffer_size)
 
         self.index = 0
         self.context = zmq.Context()
@@ -319,11 +319,21 @@ class TensorProducer:
 
     def __iter__(self) -> Iterator:
         """Return an iterator for the data loader.
+        Waits for all consumers to be ready before starting.
 
         Returns:
             An iterator for the data loader.
         """
-        self.data_loader_iter = iter(self.data_loader)
+        # Block until all consumers are ready
+        while True:
+            for k, v in self.consumers.items():
+                if self.hb.heart_progress[k] == 0:
+                    v.reset()
+                else:
+                    break
+            else:
+                break
+
         return self
 
     def __next__(self) -> tuple:
@@ -356,6 +366,7 @@ class TensorProducer:
 
         if self.index >= self.data_loader_len:
             self._reset_producer()
+            return
 
         # idle when no consumers attached
         elif not len(self.hb.consumers):
@@ -384,7 +395,6 @@ class TensorProducer:
                 self._send_consumer_len()
 
             if self.rb_buffer:
-
                 if (
                     min_batch := min([x.batch_max for x in self.consumers.values()])
                 ) not in [x[0] for x in self.rb_buffer]:
@@ -419,10 +429,11 @@ class TensorProducer:
 
             expected = [x for x in expected]
             payload = self._broadcast(self.epoch, current_batch_index, buffer_index)
-            self._handle_acks(expected, current_batch_index, payload)
+            self._handle_acks(expected, payload)
 
         except StopIteration:
             self._reset_producer()
+            return
 
     def _reset_producer(self):
         self.data_loader_iter = iter(self.data_loader)
@@ -495,9 +506,7 @@ class TensorProducer:
         self.socket.send_pyobj(payload)
         return payload
 
-    def _handle_acks(
-        self, expected: list, current_batch_index: int, payload: dict
-    ) -> None:
+    def _handle_acks(self, expected: list, payload: dict) -> None:
         """Process acknowledgements from consumers.
 
         Args:
@@ -534,15 +543,8 @@ class TensorProducer:
                 if consumer_index in expected:
                     expected.remove(consumer_index)
 
-                if (
-                    accepted
-                    == b"1"
-                    # batch_max == self.consumers[consumer_index].batch_max
-                ):  #  TODO: missing safeguard
-                    if batch_max + 1 == self.data_loader_len:
-                        self.consumers[consumer_index].reset()
-                    else:
-                        self.consumers[consumer_index].add_batch(batch_max, payload)
+                if accepted == b"1":
+                    self.consumers[consumer_index].add_batch(batch_max, payload)
 
             else:
                 logger.info(

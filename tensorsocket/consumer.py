@@ -179,10 +179,13 @@ class TensorConsumer:
             payload = self.buffer.get()  # This will block if buffer is empty
 
             if "stop_iteration" in payload:
-                self.epoch += 1
+                if (
+                    self.batch_count > 0
+                ):  # Increase epoch if we have received at least one batch
+                    self.epoch += 1
                 self.batch_count = 0
                 self.batch_max = -1
-                continue
+                raise StopIteration
 
             batch_idx = payload["current_batch_index"]
 
