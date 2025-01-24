@@ -395,13 +395,28 @@ class TensorProducer:
                 self._send_consumer_len()
 
             if self.rb_buffer:
-                if (
-                    min_batch := min([x.batch_max for x in self.consumers.values()])
-                ) not in [x[0] for x in self.rb_buffer]:
-                    current_batch_index, buffer_index = -1, -1
-                else:
-                    buffer_index = [x[0] for x in self.rb_buffer].index(min_batch)
-                    current_batch_index, _ = self.rb_buffer[buffer_index]
+                try:
+                    if (
+                        min_batch := min(
+                            [
+                                x.batch_max
+                                for x in self.consumers.values()
+                                if x.batch_max
+                                >= self.index
+                                - len(
+                                    self.rb_buffer
+                                )  # Ignore consumers that are too far behind
+                            ]
+                        )
+                    ) not in [x[0] for x in self.rb_buffer]:
+                        current_batch_index, buffer_index = -1, -1
+                    else:
+                        buffer_index = [x[0] for x in self.rb_buffer].index(min_batch)
+                        current_batch_index, _ = self.rb_buffer[buffer_index]
+                except ValueError as e:
+                    # No valid consumers, reset
+                    raise StopIteration
+
             else:
                 current_batch_index, buffer_index = 0, 0
 
@@ -471,10 +486,14 @@ class TensorProducer:
         data = self.pool.assign(data)
 
         payload = {}
-        for bs, bmax in (
-            (self.consumers[x].batch_size, self.consumers[x].batch_max)
-            for x in self.consumers
+        for consumer, bs, bmax in (
+            (k, v.batch_size, v.batch_max) for k, v in self.consumers.items()
         ):
+
+            # If the consumer is too far behind, skip
+            if bmax < self.index - len(self.rb_buffer):
+                continue
+
             messages = []
 
             for i, offset in enumerate(
@@ -495,7 +514,8 @@ class TensorProducer:
                     )
                 )
 
-            payload[f"{bs}"] = messages
+            payload[consumer[2:-1]] = messages
+        print(payload, "\n")
 
         if current_batch_index % 100 == 0:
             logger.info(

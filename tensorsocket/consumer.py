@@ -126,8 +126,8 @@ class TensorConsumer:
                 self.buffer.put(cuda_tensor_info)
                 continue
 
-            if f"{self.batch_size}" in cuda_tensor_info:  # Flexible
-                messages = cuda_tensor_info[f"{self.batch_size}"]
+            if str(self.consumer_id) in cuda_tensor_info:  # Flexible
+                messages = cuda_tensor_info[str(self.consumer_id)]
             elif "-1" in cuda_tensor_info and len(cuda_tensor_info) == 1:  # Static
                 messages = cuda_tensor_info["-1"]
             else:  # Ignore
@@ -179,13 +179,15 @@ class TensorConsumer:
             payload = self.buffer.get()  # This will block if buffer is empty
 
             if "stop_iteration" in payload:
+                self.batch_count = 0
+                self.batch_max = -1
                 if (
                     self.batch_count > 0
                 ):  # Increase epoch if we have received at least one batch
                     self.epoch += 1
-                self.batch_count = 0
-                self.batch_max = -1
-                raise StopIteration
+                    raise StopIteration
+                else:
+                    continue
 
             batch_idx = payload["current_batch_index"]
 
