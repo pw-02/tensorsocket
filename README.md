@@ -29,7 +29,6 @@ Using the `TensorProducer` requires next to no additional implementation, apart 
 
 ```python
 # producer.py
-
 data_loader = DataLoader(dataset)
 
 producer = TensorProducer(data_loader)
