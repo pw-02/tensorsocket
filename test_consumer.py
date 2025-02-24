@@ -88,7 +88,7 @@ group.add_argument(
 group = parser.add_argument_group("Model parameters")
 group.add_argument(
     "--model",
-    default="resnet50",
+    default="resnet18",
     type=str,
     metavar="MODEL",
     help='Name of model to train (default: "resnet50")',
@@ -189,7 +189,7 @@ group.add_argument(
     "-b",
     "--batch-size",
     type=int,
-    default=128,
+    default=8,
     metavar="N",
     help="Input batch size for training (default: 128)",
 )

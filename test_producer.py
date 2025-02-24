@@ -18,13 +18,13 @@ import argparse
 import logging
 import random
 import sys
-
+from torchvision import transforms
 import torch
 import yaml
 from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import create_model
-
+from s3dataset import S3ImageDataset
 from tensorsocket.producer import TensorProducer
 
 logging.basicConfig(
@@ -32,7 +32,9 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
 )
-
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
 config_parser = parser = argparse.ArgumentParser(
@@ -97,7 +99,7 @@ group.add_argument(
 group = parser.add_argument_group("Model parameters")
 group.add_argument(
     "--model",
-    default="resnet50",
+    default="resnet18",
     type=str,
     metavar="MODEL",
     help='Name of model to train (default: "resnet50")',
@@ -198,7 +200,7 @@ group.add_argument(
     "-b",
     "--batch-size",
     type=int,
-    default=128,
+    default=8,
     metavar="N",
     help="Input batch size for training (default: 128)",
 )
@@ -871,6 +873,18 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
+def get_transforms(workload_name):
+    if 'imagenet' in workload_name or 'cifar10' in workload_name:
+        # Set up data transforms for ImageNet
+        train_transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        raise ValueError(f"Invalid workload: {workload_name}")
+    return train_transform
 
 if __name__ == "__main__":
     args, args_text = _parse_args()
@@ -900,17 +914,24 @@ if __name__ == "__main__":
         vars(args), model=model, verbose=utils.is_primary(args)
     )
 
-    dataset_train = create_dataset(
-        args.dataset,
-        root=args.data_dir,
-        split=args.train_split,
-        is_training=True,
-        class_map=args.class_map,
-        download=args.dataset_download,
-        batch_size=args.batch_size,
-        seed=args.seed,
-        repeats=args.epoch_repeats,
+    # dataset_train = create_dataset(
+    #     args.dataset,
+    #     root=args.data_dir,
+    #     split=args.train_split,
+    #     is_training=True,
+    #     class_map=args.class_map,
+    #     download=args.dataset_download,
+    #     batch_size=args.batch_size,
+    #     seed=args.seed,
+    #     repeats=args.epoch_repeats,
+    # )
+
+    dataset_train = S3ImageDataset(
+        s3_data_dir="s3://imagenet1k-sdl/train/",
+        transform= get_transforms("imagenet")
     )
+
+
 
     data_loader = create_loader(
         dataset_train,
@@ -946,7 +967,7 @@ if __name__ == "__main__":
     producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02)
 
     epochs = 2
-    for _ in range(epochs):
+    for i in range(epochs):
         for _ in producer:
             pass
     producer.join()
