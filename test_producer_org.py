@@ -25,10 +25,7 @@ from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import create_model
 from s3dataset import S3ImageDataset
-from s3dataset_batches import TensorSockerDataset
 from tensorsocket.producer import TensorProducer
-from tensorsocket_sampler import TensorSocketSampler
-from torch.utils.data import DataLoader, RandomSampler
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -917,32 +914,6 @@ if __name__ == "__main__":
         vars(args), model=model, verbose=utils.is_primary(args)
     )
 
-
-    train_dataset = S3ImageDataset(
-        s3_data_dir="s3://imagenet1k-sdl/train/",
-        transform= get_transforms("imagenet")
-    )
-
-    train_dataloader = DataLoader(train_dataset,
-                                  sampler=RandomSampler(train_dataset),
-                                  batch_size=args.batch_size,
-                                  num_workers=0,
-                                  pin_memory=True)
-            
-
-
-    # train_dataset = TensorSockerDataset(s3_data_dir="s3://imagenet1k-sdl/train/",
-    #                                       transform= get_transforms("imagenet"))
-    
-    # tensor_socket_sampler = TensorSocketSampler(data_source=train_dataset,
-    #                                                     batch_size=args.batch_size)
-    
-    # train_dataloader = DataLoader(train_dataset,
-    #                                       sampler=tensor_socket_sampler,
-    #                                       batch_size=None,
-    #                                       num_workers=0,
-    #                                       pin_memory=True)
-    
     dataset_train = create_dataset(
         args.dataset,
         root=r'C:\Users\pw\projects\super\super-ml-workloads\data\cifar10',
@@ -954,6 +925,12 @@ if __name__ == "__main__":
         seed=args.seed,
         repeats=args.epoch_repeats,
     )
+
+    # dataset_train = S3ImageDataset(
+    #     s3_data_dir="s3://imagenet1k-sdl/train/",
+    #     transform= get_transforms("imagenet")
+    # )
+
 
 
     data_loader = create_loader(
@@ -987,7 +964,7 @@ if __name__ == "__main__":
         worker_seeding=args.worker_seeding,
     )
 
-    producer = TensorProducer(train_dataloader, "5556", "5557", rubber_band_pct=0.02)
+    producer = TensorProducer(data_loader, "5556", "5557", rubber_band_pct=0.02, consumer_max_buffer_size=10)
 
     epochs = 2
     for i in range(epochs):

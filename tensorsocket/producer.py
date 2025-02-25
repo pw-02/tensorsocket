@@ -424,6 +424,7 @@ class TensorProducer:
 
             if batch_length < self.producer_batch_size:
                 # add CPU tensors to rubberband buffer
+                # next_batch = next(self.data_loader_iter)
                 self.rb_buffer.append((self.index, next(self.data_loader_iter)))
 
                 # if loader batch size not yet determined, set it

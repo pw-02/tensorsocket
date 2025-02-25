@@ -15,29 +15,15 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
 import argparse
-import logging
-import random
-import sys
-from torchvision import transforms
-import torch
+import time
+
 import yaml
 from timm import utils
-from timm.data import create_dataset, create_loader, resolve_data_config
+from timm.data import resolve_data_config
 from timm.models import create_model
-from s3dataset import S3ImageDataset
-from s3dataset_batches import TensorSockerDataset
-from tensorsocket.producer import TensorProducer
-from tensorsocket_sampler import TensorSocketSampler
-from torch.utils.data import DataLoader, RandomSampler
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(message)s",
-    level=logging.INFO,
-    stream=sys.stdout,
-)
-logging.getLogger("botocore").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("boto3").setLevel(logging.WARNING)
+from tensorsocket.consumer import TensorConsumer
+
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
 config_parser = parser = argparse.ArgumentParser(
@@ -856,12 +842,9 @@ group.add_argument(
     default=False,
     help="log training and validation metrics to wandb",
 )
-# group.add_argument("--gpu-prefetch", action="store_true", default=False)
-group.add_argument("--gpu-prefetch", default=0, type=int)
 
 
 def _parse_args():
-    # Do we have a config file to parse?
     args_config, remaining = config_parser.parse_known_args()
     if args_config.config:
         with open(args_config.config, "r") as f:
@@ -876,26 +859,12 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
-def get_transforms(workload_name):
-    if 'imagenet' in workload_name or 'cifar10' in workload_name:
-        # Set up data transforms for ImageNet
-        train_transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-    else:
-        raise ValueError(f"Invalid workload: {workload_name}")
-    return train_transform
 
-if __name__ == "__main__":
+def main():
+
     args, args_text = _parse_args()
     args.rank = 0
     args.prefetcher = not args.no_prefetcher
-    args.device = torch.device("cuda") if args.gpu_prefetch else torch.device("cpu")
-    random.seed(1337)
-    torch.manual_seed(1337)
 
     model = create_model(
         args.model,
@@ -917,81 +886,15 @@ if __name__ == "__main__":
         vars(args), model=model, verbose=utils.is_primary(args)
     )
 
-
-    train_dataset = S3ImageDataset(
-        s3_data_dir="s3://imagenet1k-sdl/train/",
-        transform= get_transforms("imagenet")
-    )
-
-    train_dataloader = DataLoader(train_dataset,
-                                  sampler=RandomSampler(train_dataset),
-                                  batch_size=args.batch_size,
-                                  num_workers=0,
-                                  pin_memory=True)
-            
+    consumer = TensorConsumer("5556", "5557")
+    for batch in consumer:
+        inputs, labels = batch
+        if labels != None:
+            print(inputs[:1])
+        else:
+            print("Waiting ...")
+        time.sleep(0.05)
 
 
-    # train_dataset = TensorSockerDataset(s3_data_dir="s3://imagenet1k-sdl/train/",
-    #                                       transform= get_transforms("imagenet"))
-    
-    # tensor_socket_sampler = TensorSocketSampler(data_source=train_dataset,
-    #                                                     batch_size=args.batch_size)
-    
-    # train_dataloader = DataLoader(train_dataset,
-    #                                       sampler=tensor_socket_sampler,
-    #                                       batch_size=None,
-    #                                       num_workers=0,
-    #                                       pin_memory=True)
-    
-    dataset_train = create_dataset(
-        args.dataset,
-        root=r'C:\Users\pw\projects\super\super-ml-workloads\data\cifar10',
-        split=args.train_split,
-        is_training=True,
-        class_map=args.class_map,
-        download=args.dataset_download,
-        batch_size=args.batch_size,
-        seed=args.seed,
-        repeats=args.epoch_repeats,
-    )
-
-
-    data_loader = create_loader(
-        dataset_train,
-        input_size=data_config["input_size"],
-        batch_size=args.batch_size,
-        is_training=True,
-        use_prefetcher=args.prefetcher,
-        no_aug=args.no_aug,
-        re_prob=args.reprob,
-        re_mode=args.remode,
-        re_count=args.recount,
-        re_split=args.resplit,
-        scale=args.scale,
-        ratio=args.ratio,
-        hflip=args.hflip,
-        vflip=args.vflip,
-        color_jitter=args.color_jitter,
-        auto_augment=args.aa,
-        num_aug_repeats=args.aug_repeats,
-        num_aug_splits=0,
-        interpolation=args.train_interpolation,
-        mean=data_config["mean"],
-        std=data_config["std"],
-        num_workers=args.workers,
-        distributed=False,
-        collate_fn=None,
-        pin_memory=args.pin_mem,
-        device=args.device,
-        use_multi_epochs_loader=args.use_multi_epochs_loader,
-        worker_seeding=args.worker_seeding,
-    )
-
-    producer = TensorProducer(train_dataloader, "5556", "5557", rubber_band_pct=0.02)
-
-    epochs = 2
-    for i in range(epochs):
-        for _ in producer:
-            pass
-    producer.join()
-    print("finished")
+if __name__ == "__main__":
+    main()

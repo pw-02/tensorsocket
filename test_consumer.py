@@ -888,7 +888,7 @@ def main():
 
     consumer = TensorConsumer("5556", "5557")
     for batch in consumer:
-        inputs, labels = batch
+        samples, labels = batch
         if labels != None:
             print(labels[:5])
         else:
